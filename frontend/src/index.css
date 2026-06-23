@@ -1,0 +1,241 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-base:      #080c18;
+  --bg-surface:   #0e1425;
+  --bg-elevated:  #141c2e;
+  --bg-card:      #1a2340;
+  --bg-hover:     #1e2a4a;
+
+  --border:       rgba(99, 130, 255, 0.12);
+  --border-bright:rgba(99, 130, 255, 0.28);
+
+  --text-primary: #e8edf8;
+  --text-secondary:#8a96b8;
+  --text-muted:   #4a5570;
+
+  --accent-blue:  #4f7cff;
+  --accent-cyan:  #00d4ff;
+  --accent-purple:#8b5cf6;
+  --accent-green: #10e88a;
+  --accent-yellow:#f5a623;
+  --accent-red:   #ff4757;
+
+  --glow-blue:    0 0 20px rgba(79, 124, 255, 0.35);
+  --glow-green:   0 0 20px rgba(16, 232, 138, 0.35);
+  --glow-red:     0 0 20px rgba(255, 71, 87, 0.35);
+
+  --radius-sm:    6px;
+  --radius-md:    10px;
+  --radius-lg:    16px;
+  --radius-xl:    24px;
+
+  --font-sans:    'Space Grotesk', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'Courier New', monospace;
+
+  --transition:   all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-base); }
+::-webkit-scrollbar-thumb { background: var(--bg-hover); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-blue); }
+
+/* Utility */
+.mono { font-family: var(--font-mono); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Animations */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes slide-in-up {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(-16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes shimmer {
+  0%   { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+
+.animate-in { animation: slide-in-up 0.35s ease forwards; }
+.animate-right { animation: slide-in-right 0.35s ease forwards; }
+
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-card) 25%, var(--bg-hover) 50%, var(--bg-card) 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.4s infinite;
+  border-radius: var(--radius-sm);
+}
+
+/* Status badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.badge-open       { background: rgba(245,166,35,0.15); color: var(--accent-yellow); }
+.badge-open .badge-dot { background: var(--accent-yellow); animation: pulse-glow 1.5s infinite; }
+.badge-analyzing  { background: rgba(79,124,255,0.15); color: var(--accent-blue); }
+.badge-analyzing .badge-dot { background: var(--accent-blue); animation: pulse-glow 1.5s infinite; }
+.badge-resolved   { background: rgba(16,232,138,0.15); color: var(--accent-green); }
+.badge-resolved .badge-dot { background: var(--accent-green); }
+.badge-pending    { background: rgba(245,166,35,0.15); color: var(--accent-yellow); }
+.badge-pending .badge-dot { background: var(--accent-yellow); animation: pulse-glow 1.5s infinite; }
+.badge-approved   { background: rgba(16,232,138,0.15); color: var(--accent-green); }
+.badge-approved .badge-dot { background: var(--accent-green); }
+.badge-rejected   { background: rgba(255,71,87,0.15); color: var(--accent-red); }
+.badge-rejected .badge-dot { background: var(--accent-red); }
+.badge-high       { background: rgba(255,71,87,0.15); color: var(--accent-red); }
+.badge-medium     { background: rgba(245,166,35,0.15); color: var(--accent-yellow); }
+.badge-low        { background: rgba(16,232,138,0.15); color: var(--accent-green); }
+
+/* Confidence bar */
+.conf-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-hover);
+  overflow: hidden;
+}
+.conf-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.6s ease;
+}
+
+/* Analysis dialog — scroll clipped inside rounded shell */
+.analysis-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.65);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 15vh 24px 24px;
+  overflow-y: auto;
+}
+
+.analysis-dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
+  max-height: calc(75vh - 24px);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+.analysis-dialog__header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.analysis-dialog__title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.analysis-dialog__close {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.analysis-dialog__close:hover {
+  color: var(--text-primary);
+  border-color: var(--accent-blue);
+}
+
+.analysis-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px 24px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(99, 130, 255, 0.35) transparent;
+}
+
+.analysis-dialog__body::-webkit-scrollbar {
+  width: 10px;
+}
+
+.analysis-dialog__body::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 12px 0;
+  border-radius: 999px;
+}
+
+.analysis-dialog__body::-webkit-scrollbar-thumb {
+  background: rgba(99, 130, 255, 0.28);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.analysis-dialog__body::-webkit-scrollbar-thumb:hover {
+  background: rgba(99, 130, 255, 0.5);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}

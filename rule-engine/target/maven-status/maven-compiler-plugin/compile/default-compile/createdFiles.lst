@@ -1,0 +1,3 @@
+com\selfhealing\rules\util\RoutingUrlResolver.class
+com\selfhealing\rules\service\RouteChangedPublisher.class
+com\selfhealing\rules\util\RoutingUrlResolver$ResolvedUrl.class
