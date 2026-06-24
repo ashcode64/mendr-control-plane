@@ -10,8 +10,13 @@ const services = axios.create({ baseURL: '/api/services', timeout: 10000 });
   client.interceptors.response.use(
     r => r,
     err => {
-      const msg = err.response?.data?.message || err.message || 'Request failed';
-      return Promise.reject(new Error(msg));
+      const data = err.response?.data;
+      const msg = data?.message
+        || (Array.isArray(data?.errors) && data.errors.length ? data.errors.join('; ') : null)
+        || err.message || 'Request failed';
+      const normalized = new Error(msg);
+      normalized.response = err.response;
+      return Promise.reject(normalized);
     }
   );
 });
@@ -79,4 +84,13 @@ export const api = {
   getServiceContracts:  name        => services.get(`/${name}/contracts`).then(r => r.data),
   addServiceContract:   (name, body)=> services.post(`/${name}/contracts`, body).then(r => r.data),
   deleteContract:       id          => services.delete(`/contracts/${id}`).then(r => r.data),
+
+  // ── Manifest import ────────────────────────────────────────────────────────
+  importManifest: (file) => {
+    const form = new FormData();
+    form.append('file', file);
+    return services
+      .post('/import-manifest', form, { headers: { 'Content-Type': 'multipart/form-data' } })
+      .then(r => r.data);
+  },
 };
