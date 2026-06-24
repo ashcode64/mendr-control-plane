@@ -2,12 +2,16 @@ package com.selfhealing.analysis.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.dto.ApiFailureEvent;
+import com.selfhealing.analysis.service.context.TopologyContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -33,6 +37,8 @@ public class FailureContextEnricher {
         List<String> upstreamAllowed = loadUpstreamAllowedOrigins(corsPolicy, event.getServiceB());
         List<String> mendrEdgeAllowed = loadMendrEdgeAllowedOrigins(event.getServiceB());
         List<ActiveRuleSummary> activeRules = loadActiveRules(
+                event.getServiceA(), event.getServiceB(), event.getEndpoint(), event.getTimestamp());
+        TopologyContext topology = loadTopology(
                 event.getServiceA(), event.getServiceB(), event.getEndpoint());
 
         SchemaDiffResult schemaDiff = SchemaDiffResult.empty();
@@ -45,6 +51,7 @@ public class FailureContextEnricher {
                     event.getRequestPayload(),
                     contracts.senderContract(),
                     contracts.receiverContract(),
+                    contracts.receiverSchema(),
                     event.getErrorMessage(),
                     event.getResponsePayload());
             if (schemaDiff.hasDeterministicRule()) {
@@ -90,7 +97,7 @@ public class FailureContextEnricher {
         return new FailureAnalysisContext(
                 event, category, contracts, registry, corsPolicy,
                 upstreamAllowed, mendrEdgeAllowed, activeRules,
-                schemaDiff, responseDiff, corsUpstreamDiff, corsEdgeDiff);
+                schemaDiff, responseDiff, corsUpstreamDiff, corsEdgeDiff, topology);
     }
 
     private ContractContext fetchContracts(String serviceA, String serviceB, String endpoint) {
@@ -99,10 +106,27 @@ public class FailureContextEnricher {
                     fetchRequestContract(serviceA, endpoint, "1.0"),
                     fetchRequestContract(serviceB, endpoint, "1.0"),
                     fetchResponseContract(serviceA, endpoint, "1.0"),
-                    fetchResponseContract(serviceB, endpoint, "1.0"));
+                    fetchResponseContract(serviceB, endpoint, "1.0"),
+                    fetchInferredSchema(serviceB, endpoint, "REQUEST"));
         } catch (Exception e) {
             log.debug("Could not fetch contracts: {}", e.getMessage());
             return new ContractContext(null, null, null, null);
+        }
+    }
+
+    private Object fetchInferredSchema(String serviceName, String endpoint, String direction) {
+        try {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT inferred_schema FROM service_contracts
+                WHERE service_name = ? AND endpoint = ? AND direction = ?
+                  AND inferred_schema IS NOT NULL AND is_active = true
+                ORDER BY created_at DESC LIMIT 1
+                """, serviceName, endpoint, direction);
+            if (rows.isEmpty()) return null;
+            return ContractPayloadParser.toMap(rows.get(0).get("inferred_schema"), objectMapper);
+        } catch (Exception e) {
+            log.debug("Could not fetch inferred schema for {} {}: {}", serviceName, endpoint, e.getMessage());
+            return null;
         }
     }
 
@@ -216,49 +240,176 @@ public class FailureContextEnricher {
         }
     }
 
-    List<ActiveRuleSummary> loadActiveRules(String serviceA, String serviceB, String endpoint) {
+    public List<ActiveRuleSummary> loadActiveRules(String serviceA, String serviceB, String endpoint) {
+        return loadActiveRules(serviceA, serviceB, endpoint, null);
+    }
+
+    /**
+     * Active rules on the failing route, with structured fields (not pre-joined
+     * arrow strings) and a deterministic {@code failureRecurredAfterThisRule}:
+     * if this failure occurred at/after a rule's {@code approved_at}, that rule
+     * for this exact signature did not fix it.
+     */
+    List<ActiveRuleSummary> loadActiveRules(String serviceA, String serviceB, String endpoint,
+                                            LocalDateTime failureAt) {
         List<ActiveRuleSummary> rules = new ArrayList<>();
         if (serviceA == null || serviceB == null || endpoint == null) return rules;
         try {
             List<Map<String, Object>> transforms = jdbcTemplate.queryForList("""
-                SELECT rule_type, rule_definition FROM transformation_rules
+                SELECT rule_type, rule_definition, approved_at FROM transformation_rules
                 WHERE service_a = ? AND service_b = ? AND endpoint = ? AND is_active = true
                 ORDER BY approved_at DESC NULLS LAST LIMIT 5
                 """, serviceA, serviceB, endpoint);
             for (Map<String, Object> row : transforms) {
+                LocalDateTime approvedAt = toLocalDateTime(row.get("approved_at"));
                 rules.add(new ActiveRuleSummary(
                         str(row.get("rule_type")),
                         "transformation",
-                        str(row.get("rule_definition"))));
+                        str(row.get("rule_definition")),
+                        approvedAt != null ? approvedAt.toString() : null,
+                        ContractPayloadParser.toMap(row.get("rule_definition"), objectMapper),
+                        recurredAfter(failureAt, approvedAt)));
             }
 
             List<Map<String, Object>> overrides = jdbcTemplate.queryForList("""
-                SELECT caller_origin, outbound_origin FROM origin_override_rules
+                SELECT caller_origin, outbound_origin, endpoint, approved_at FROM origin_override_rules
                 WHERE source_service = ? AND target_service = ? AND endpoint = ? AND is_active = true
                 ORDER BY approved_at DESC NULLS LAST LIMIT 5
                 """, serviceA, serviceB, endpoint);
             for (Map<String, Object> row : overrides) {
+                LocalDateTime approvedAt = toLocalDateTime(row.get("approved_at"));
+                Map<String, Object> def = new LinkedHashMap<>();
+                def.put("callerOrigin", row.get("caller_origin"));
+                def.put("outboundOrigin", row.get("outbound_origin"));
+                def.put("endpoint", row.get("endpoint"));
                 rules.add(new ActiveRuleSummary(
                         "CORS_ORIGIN_OVERRIDE",
                         "origin_override",
-                        row.get("caller_origin") + " → " + row.get("outbound_origin")));
+                        row.get("caller_origin") + " → " + row.get("outbound_origin"),
+                        approvedAt != null ? approvedAt.toString() : null,
+                        def,
+                        recurredAfter(failureAt, approvedAt)));
             }
 
             List<Map<String, Object>> routing = jdbcTemplate.queryForList("""
-                SELECT original_url, new_url FROM routing_rules
+                SELECT original_url, new_url, discovery_method, approved_at FROM routing_rules
                 WHERE service_name = ? AND is_active = true
                 ORDER BY approved_at DESC NULLS LAST LIMIT 3
                 """, serviceB);
             for (Map<String, Object> row : routing) {
+                LocalDateTime approvedAt = toLocalDateTime(row.get("approved_at"));
+                Map<String, Object> def = new LinkedHashMap<>();
+                def.put("originalUrl", row.get("original_url"));
+                def.put("newUrl", row.get("new_url"));
+                def.put("discoveryMethod", row.get("discovery_method"));
                 rules.add(new ActiveRuleSummary(
                         "ROUTING_OVERRIDE",
                         "routing",
-                        row.get("original_url") + " → " + row.get("new_url")));
+                        row.get("original_url") + " → " + row.get("new_url"),
+                        approvedAt != null ? approvedAt.toString() : null,
+                        def,
+                        recurredAfter(failureAt, approvedAt)));
             }
         } catch (Exception e) {
             log.debug("Could not load active rules: {}", e.getMessage());
         }
         return rules;
+    }
+
+    private static boolean recurredAfter(LocalDateTime failureAt, LocalDateTime approvedAt) {
+        return failureAt != null && approvedAt != null && !failureAt.isBefore(approvedAt);
+    }
+
+    private static LocalDateTime toLocalDateTime(Object value) {
+        if (value instanceof LocalDateTime ldt) return ldt;
+        if (value instanceof Timestamp ts) return ts.toLocalDateTime();
+        return null;
+    }
+
+    /**
+     * Manifest-derived dependency graph for the failing route: the failing call's
+     * own declared intent, everything the source service calls, and everyone who
+     * calls the target service. Built from {@code service_routes} +
+     * {@code service_contracts.description} populated at manifest import.
+     */
+    public TopologyContext loadTopology(String serviceA, String serviceB, String endpoint) {
+        if (serviceA == null && serviceB == null) return null;
+        try {
+            TopologyContext.Edge failingCall = null;
+            if (serviceA != null && serviceB != null && endpoint != null) {
+                List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                    SELECT source_service, target_service, endpoint, http_method, description
+                    FROM service_routes
+                    WHERE source_service = ? AND target_service = ? AND endpoint = ? AND is_active = true
+                    ORDER BY updated_at DESC LIMIT 1
+                    """, serviceA, serviceB, endpoint);
+                if (!rows.isEmpty()) failingCall = toEdge(rows.get(0));
+                if (failingCall == null || failingCall.description() == null) {
+                    String desc = loadEndpointDescription(serviceB, endpoint);
+                    if (desc != null) {
+                        failingCall = new TopologyContext.Edge(serviceA, serviceB, endpoint,
+                                failingCall != null ? failingCall.httpMethod() : null, desc);
+                    }
+                }
+            }
+
+            List<TopologyContext.Edge> sourceOutbound = serviceA == null ? List.of()
+                    : toEdges(jdbcTemplate.queryForList("""
+                        SELECT source_service, target_service, endpoint, http_method, description
+                        FROM service_routes WHERE source_service = ? AND is_active = true
+                        ORDER BY target_service, endpoint LIMIT 25
+                        """, serviceA));
+
+            List<TopologyContext.Edge> targetInbound = serviceB == null ? List.of()
+                    : toEdges(jdbcTemplate.queryForList("""
+                        SELECT source_service, target_service, endpoint, http_method, description
+                        FROM service_routes WHERE target_service = ? AND is_active = true
+                        ORDER BY source_service, endpoint LIMIT 25
+                        """, serviceB));
+
+            TopologyContext topo = new TopologyContext(
+                    failingCall,
+                    sourceOutbound.isEmpty() ? null : sourceOutbound,
+                    targetInbound.isEmpty() ? null : targetInbound);
+            return topo.isEmpty() ? null : topo;
+        } catch (Exception e) {
+            log.debug("Could not load topology: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private String loadEndpointDescription(String serviceName, String endpoint) {
+        try {
+            List<String> rows = jdbcTemplate.query("""
+                SELECT description FROM service_contracts
+                WHERE service_name = ? AND endpoint = ? AND description IS NOT NULL AND is_active = true
+                ORDER BY created_at DESC LIMIT 1
+                """, (rs, n) -> rs.getString("description"), serviceName, endpoint);
+            return rows.isEmpty() ? null : rows.get(0);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static List<TopologyContext.Edge> toEdges(List<Map<String, Object>> rows) {
+        List<TopologyContext.Edge> out = new ArrayList<>();
+        for (Map<String, Object> row : rows) out.add(toEdge(row));
+        return out;
+    }
+
+    private static TopologyContext.Edge toEdge(Map<String, Object> row) {
+        return new TopologyContext.Edge(
+                strOrNull(row.get("source_service")),
+                strOrNull(row.get("target_service")),
+                strOrNull(row.get("endpoint")),
+                strOrNull(row.get("http_method")),
+                strOrNull(row.get("description")));
+    }
+
+    private static String strOrNull(Object o) {
+        if (o == null) return null;
+        String s = o.toString();
+        return s.isBlank() ? null : s;
     }
 
     private RegistryDiscoveryContext fetchRegistryContext(ApiFailureEvent event) {

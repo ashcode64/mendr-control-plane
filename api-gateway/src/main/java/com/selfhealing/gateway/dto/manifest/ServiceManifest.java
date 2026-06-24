@@ -79,6 +79,32 @@ public class ServiceManifest {
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class PayloadSpec {
+        /** Single canonical example (back-compat). */
         private Map<String, Object> example;
+        /** Optional additional examples — together they sharpen required/optional inference. */
+        private List<Map<String, Object>> examples = new ArrayList<>();
+        /** Optional author-supplied schema; if absent one is inferred from the example(s). */
+        private Map<String, Object> schema;
+
+        /** All examples, with the canonical {@code example} first if present. */
+        public List<Map<String, Object>> allExamples() {
+            List<Map<String, Object>> all = new ArrayList<>();
+            if (example != null && !example.isEmpty()) {
+                all.add(example);
+            }
+            if (examples != null) {
+                for (Map<String, Object> e : examples) {
+                    if (e != null && !e.isEmpty()) all.add(e);
+                }
+            }
+            return all;
+        }
+
+        /** The primary example for storage/back-compat: the canonical one, else the first. */
+        public Map<String, Object> primaryExample() {
+            if (example != null && !example.isEmpty()) return example;
+            List<Map<String, Object>> all = allExamples();
+            return all.isEmpty() ? null : all.get(0);
+        }
     }
 }

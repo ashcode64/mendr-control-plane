@@ -1,6 +1,8 @@
-C:\Users\Madhu\Downloads\mendr-control-plane\ai-analysis-service\src\test\java\com\selfhealing\analysis\service\ResponseMismatchAnalyzerTest.java
-C:\Users\Madhu\Downloads\mendr-control-plane\ai-analysis-service\src\test\java\com\selfhealing\analysis\service\CorsUpstreamAnalyzerTest.java
-C:\Users\Madhu\Downloads\mendr-control-plane\ai-analysis-service\src\test\java\com\selfhealing\analysis\service\TransformationRulesParserTest.java
-C:\Users\Madhu\Downloads\mendr-control-plane\ai-analysis-service\src\test\java\com\selfhealing\analysis\service\EndpointNormalizerTest.java
-C:\Users\Madhu\Downloads\mendr-control-plane\ai-analysis-service\src\test\java\com\selfhealing\analysis\service\SchemaMismatchAnalyzerTest.java
-C:\Users\Madhu\Downloads\mendr-control-plane\ai-analysis-service\src\test\java\com\selfhealing\analysis\service\RoutingUrlResolverTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/RoutingUrlResolverTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/controller/McpControllerTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/EndpointNormalizerTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/TransformationRulesParserTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/CorsUpstreamAnalyzerTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/SchemaMismatchAnalyzerTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/AnalysisRegressionHarnessTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/ResponseMismatchAnalyzerTest.java

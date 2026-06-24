@@ -135,6 +135,51 @@ class SchemaMismatchAnalyzerTest {
     }
 
     @Test
+    void schemaMarksOptionalFieldAbsenceAsNotMissing() {
+        // receiver example has 4 fields, but schema says only customerId + amount are required.
+        Map<String, Object> receiverEx = Map.of(
+                "customerId", "C1", "amount", 99.99, "note", "n", "coupon", "x");
+        Map<String, Object> actual = new LinkedHashMap<>();
+        actual.put("customerId", "C1");
+        actual.put("amount", 99.99);
+        // note + coupon absent — but they are optional per schema
+
+        Map<String, Object> schema = Map.of(
+                "type", "object",
+                "required", java.util.List.of("customerId", "amount"),
+                "properties", Map.of());
+
+        SchemaDiffResult diff = SchemaMismatchAnalyzer.analyze(
+                actual, receiverEx, receiverEx, schema, "", null);
+
+        assertEquals(SchemaDiffResult.Kind.NONE, diff.kind(),
+                "optional fields absent must not produce a MISSING_FIELD rule");
+        assertFalse(diff.hasDeterministicRule());
+    }
+
+    @Test
+    void schemaStillFlagsRequiredFieldAbsence() {
+        Map<String, Object> receiverEx = Map.of(
+                "customerId", "C1", "amount", 99.99, "note", "n");
+        Map<String, Object> actual = new LinkedHashMap<>();
+        actual.put("customerId", "C1");
+        actual.put("note", "n");
+        // amount (required) absent
+
+        Map<String, Object> schema = Map.of(
+                "type", "object",
+                "required", java.util.List.of("customerId", "amount"),
+                "properties", Map.of());
+
+        SchemaDiffResult diff = SchemaMismatchAnalyzer.analyze(
+                actual, receiverEx, receiverEx, schema, "amount is required", null);
+
+        assertEquals(SchemaDiffResult.Kind.MISSING_FIELD, diff.kind());
+        assertTrue(diff.missingFields().contains("amount"));
+        assertTrue(diff.hasDeterministicRule());
+    }
+
+    @Test
     void emptyAddDefaultIsNotDeterministic() {
         SchemaDiffResult diff = new SchemaDiffResult(
                 SchemaDiffResult.Kind.MISSING_FIELD,

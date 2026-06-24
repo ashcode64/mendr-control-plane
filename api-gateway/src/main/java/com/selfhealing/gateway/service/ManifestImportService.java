@@ -12,6 +12,7 @@ import com.selfhealing.gateway.model.ServiceContract;
 import com.selfhealing.gateway.model.ServiceRegistration;
 import com.selfhealing.gateway.model.ServiceRoute;
 import com.selfhealing.gateway.repository.ServiceRouteRepository;
+import com.selfhealing.gateway.util.JsonSchemaInferrer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -21,6 +22,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -224,8 +226,10 @@ public class ManifestImportService {
         if (payload == null) {
             return;
         }
-        if (payload.getExample() == null) {
-            errors.add(prefix + ".example is malformed or empty (expected a JSON object)");
+        boolean hasExample = payload.primaryExample() != null;
+        boolean hasSchema = payload.getSchema() != null && !payload.getSchema().isEmpty();
+        if (!hasExample && !hasSchema) {
+            errors.add(prefix + " must provide an example, examples, or schema (expected a JSON object)");
         }
     }
 
@@ -258,9 +262,19 @@ public class ManifestImportService {
     private void registerContractIfPresent(String serviceName, String endpoint, String method,
                                            String direction, String version, String description,
                                            PayloadSpec payload, List<String> contractLines) {
-        if (payload == null || payload.getExample() == null) {
+        if (payload == null) {
             return;
         }
+        Map<String, Object> primary = payload.primaryExample();
+        if (primary == null) {
+            return;
+        }
+
+        // Prefer an author-supplied schema; otherwise infer one from all examples.
+        Map<String, Object> schema = payload.getSchema() != null && !payload.getSchema().isEmpty()
+                ? payload.getSchema()
+                : JsonSchemaInferrer.infer(payload.allExamples());
+
         ServiceContract contract = ServiceContract.builder()
                 .serviceName(serviceName)
                 .endpoint(endpoint)
@@ -269,10 +283,15 @@ public class ManifestImportService {
                 .version(version)
                 .description(description)
                 .registeredBy("manifest-import")
-                .examplePayload(payload.getExample())
+                .examplePayload(primary)
+                .inferredSchema(schema)
                 .build();
         registryService.registerContract(contract);
-        contractLines.add(direction + " " + method + " " + endpoint + " (v" + version + ")");
+
+        int exampleCount = payload.allExamples().size();
+        contractLines.add(direction + " " + method + " " + endpoint + " (v" + version + ")"
+                + (exampleCount > 1 ? " [" + exampleCount + " examples]" : "")
+                + (schema != null ? " +schema" : ""));
     }
 
     private void upsertRoute(String source, String target, String endpoint, String method,

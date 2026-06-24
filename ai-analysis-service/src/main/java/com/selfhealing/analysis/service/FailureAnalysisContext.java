@@ -1,6 +1,7 @@
 package com.selfhealing.analysis.service;
 
 import com.selfhealing.analysis.dto.ApiFailureEvent;
+import com.selfhealing.analysis.service.context.TopologyContext;
 
 import java.util.List;
 
@@ -19,7 +20,8 @@ public record FailureAnalysisContext(
         SchemaDiffResult schemaDiff,
         ResponseDiffResult responseDiff,
         CorsUpstreamDiffResult corsUpstreamDiff,
-        CorsEdgeDiffResult corsEdgeDiff) {
+        CorsEdgeDiffResult corsEdgeDiff,
+        TopologyContext topology) {
 
     public static FailureAnalysisContext minimal(ApiFailureEvent event, String category) {
         return new FailureAnalysisContext(
@@ -31,6 +33,7 @@ public record FailureAnalysisContext(
                 SchemaDiffResult.empty(),
                 ResponseDiffResult.empty(),
                 CorsUpstreamDiffResult.empty(),
-                CorsEdgeDiffResult.empty());
+                CorsEdgeDiffResult.empty(),
+                null);
     }
 }

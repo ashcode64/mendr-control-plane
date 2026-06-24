@@ -35,7 +35,24 @@ public final class SchemaMismatchAnalyzer {
             Object receiverContract,
             String errorMessage,
             Map<String, Object> responsePayload) {
+        return analyze(actualRequest, senderContract, receiverContract, null, errorMessage, responsePayload);
+    }
 
+    /**
+     * Schema-aware overload. When {@code receiverSchema} (inferred at manifest import)
+     * is present, a field absent from the actual payload is only treated as MISSING if
+     * the schema marks it REQUIRED — so optional fields no longer trigger spurious
+     * ADD_DEFAULT rules. Falls back to example-based behavior when no schema is given.
+     */
+    public static SchemaDiffResult analyze(
+            Map<String, Object> actualRequest,
+            Object senderContract,
+            Object receiverContract,
+            Object receiverSchema,
+            String errorMessage,
+            Map<String, Object> responsePayload) {
+
+        Set<String> requiredFields = requiredFields(receiverSchema);
         Map<String, Object> actual = flatten(actualRequest);
         Map<String, Object> sender = flatten(ContractPayloadParser.toMap(senderContract, MAPPER));
         Map<String, Object> receiver = flatten(ContractPayloadParser.toMap(receiverContract, MAPPER));
@@ -56,20 +73,32 @@ public final class SchemaMismatchAnalyzer {
         Map<String, String> renameMappings = findRenameMappings(actual, sender, receiver);
         Map<String, String> typeCoercions = findTypeCoercions(actual, receiver);
 
-        // Priority 1 — actual has fewer fields than receiver contract
-        if (receiverCount > 0 && actualCount < receiverCount) {
+        // Priority 1 — actual has fewer fields than receiver contract.
+        // With a schema, the meaningful baseline is the REQUIRED field set, not every
+        // example field; an optional field being absent is not a mismatch.
+        boolean fewerThanExpected = requiredFields.isEmpty()
+                ? (receiverCount > 0 && actualCount < receiverCount)
+                : !actual.keySet().containsAll(requiredFields);
+        if (fewerThanExpected) {
             Set<String> missingFields = findMissingFields(actual, sender, receiver, errorMessage, responsePayload);
-            Map<String, Object> defaults = buildDefaults(missingFields, sender, receiver);
-            String summary = "Missing %d field(s): actual has %d fields, receiver contract has %d: %s"
-                    .formatted(missingFields.size(), actualCount, receiverCount, missingFields);
-            return new SchemaDiffResult(
-                    SchemaDiffResult.Kind.MISSING_FIELD,
-                    summary,
-                    missingFields,
-                    Map.of(),
-                    Map.of(),
-                    defaults,
-                    !defaults.isEmpty());
+            if (!requiredFields.isEmpty()) {
+                missingFields.retainAll(requiredFields);
+            }
+            // Only commit to MISSING_FIELD if something is genuinely missing; otherwise
+            // fall through to rename/type detection (e.g. only optional fields absent).
+            if (!missingFields.isEmpty()) {
+                Map<String, Object> defaults = buildDefaults(missingFields, sender, receiver);
+                String summary = "Missing %d field(s): actual has %d fields, receiver contract has %d: %s"
+                        .formatted(missingFields.size(), actualCount, receiverCount, missingFields);
+                return new SchemaDiffResult(
+                        SchemaDiffResult.Kind.MISSING_FIELD,
+                        summary,
+                        missingFields,
+                        Map.of(),
+                        Map.of(),
+                        defaults,
+                        !defaults.isEmpty());
+            }
         }
 
         // Priority 2 — same field count (or actual has more): name mismatches first
@@ -119,6 +148,20 @@ public final class SchemaMismatchAnalyzer {
         }
 
         return SchemaDiffResult.empty();
+    }
+
+    /** Extract the REQUIRED field names from an inferred schema, if one is present. */
+    @SuppressWarnings("unchecked")
+    static Set<String> requiredFields(Object receiverSchema) {
+        Map<String, Object> schema = ContractPayloadParser.toMap(receiverSchema, MAPPER);
+        if (schema == null || schema.isEmpty()) return Set.of();
+        Object required = schema.get("required");
+        if (!(required instanceof List<?> list)) return Set.of();
+        Set<String> out = new LinkedHashSet<>();
+        for (Object o : list) {
+            if (o != null) out.add(o.toString());
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

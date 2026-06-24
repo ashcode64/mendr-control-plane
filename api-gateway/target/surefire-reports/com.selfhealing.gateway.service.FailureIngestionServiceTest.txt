@@ -1,4 +1,4 @@
 -------------------------------------------------------------------------------
 Test set: com.selfhealing.gateway.service.FailureIngestionServiceTest
 -------------------------------------------------------------------------------
-Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 1.453 s -- in com.selfhealing.gateway.service.FailureIngestionServiceTest
+Tests run: 7, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.068 s -- in com.selfhealing.gateway.service.FailureIngestionServiceTest

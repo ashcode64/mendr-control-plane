@@ -2,6 +2,11 @@ package com.selfhealing.analysis.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.selfhealing.analysis.service.context.DeterministicFinding;
+import com.selfhealing.analysis.service.context.StructuredFailureContext;
+import com.selfhealing.analysis.service.tool.AnalysisToolResult;
+import com.selfhealing.analysis.service.tool.AnalysisTools;
+import com.selfhealing.analysis.service.tool.ContextToolExecutor;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -9,9 +14,23 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * Calls Claude with Anthropic tool-use. Output is always a {@code tool_use} block,
+ * so the rule type is the tool name and the parameters are schema-validated input —
+ * no free-text JSON to scrape. Three tiers by cost:
+ *
+ * <ul>
+ *   <li>Tier 1 (deterministic): force the single matching tool — type can't be wrong.</li>
+ *   <li>Tier 2 (known category): offer category-scoped tools, {@code tool_choice=any}.</li>
+ *   <li>Tier 3 (UNKNOWN / low-conf): bounded agent loop with read-only context tools,
+ *       then a forced {@code propose_*} tool.</li>
+ * </ul>
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -19,6 +38,7 @@ public class ClaudeApiClient {
 
     private final WebClient.Builder webClientBuilder;
     private final ObjectMapper objectMapper;
+    private final ContextToolExecutor contextToolExecutor;
 
     @Value("${anthropic.api-key:}")
     private String apiKey;
@@ -32,7 +52,9 @@ public class ClaudeApiClient {
     @Value("${anthropic.max-tokens:2000}")
     private int maxTokens;
 
-    /** Runs once at startup — check console for this before any failure is analyzed. */
+    @Value("${anthropic.agent-loop.max-turns:3}")
+    private int maxAgentTurns;
+
     @PostConstruct
     void logAnthropicConfigAtStartup() {
         if (apiKey == null || apiKey.isBlank()) {
@@ -43,274 +65,219 @@ public class ClaudeApiClient {
     }
 
     /**
-     * Send a prompt to Claude and return the text response.
+     * Run analysis for the given structured context and return a typed result.
+     * Picks the tier from the context (deterministic finding / known category / UNKNOWN).
      */
-    public String analyzeFailure(String systemPrompt, String userPrompt) {
-        return analyzeFailure(systemPrompt, userPrompt, null);
-    }
+    public AnalysisToolResult analyze(String systemPrompt,
+                                      StructuredFailureContext structuredContext,
+                                      FailureAnalysisContext ctx) {
+        String userJson = serialize(structuredContext);
+        String category = ctx.category();
+        DeterministicFinding finding = structuredContext.deterministicFinding();
+        boolean deterministic = finding != null && finding.hasConfidentMatch();
 
-    public String analyzeFailure(String systemPrompt, String userPrompt, FailureAnalysisContext ctx) {
         if (apiKey == null || apiKey.isBlank()) {
             log.warn("ANTHROPIC_API_KEY not set. Using mock analysis.");
-            return getMockAnalysis(userPrompt, ctx);
+            return mock(structuredContext, ctx);
         }
 
         try {
-            Map<String, Object> requestBody = Map.of(
-                    "model", model,
-                    "max_tokens", maxTokens,
-                    "system", systemPrompt,
-                    "messages", List.of(Map.of("role", "user", "content", userPrompt))
-            );
-
-            WebClient client = webClientBuilder
-                    .baseUrl("https://api.anthropic.com")
-                    .defaultHeader("x-api-key", apiKey)
-                    .defaultHeader("anthropic-version", "2023-06-01")
-                    .defaultHeader("Content-Type", "application/json")
-                    .build();
-
-            String responseBody = client.post()
-                    .uri("/v1/messages")
-                    .bodyValue(requestBody)
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block();
-
-            JsonNode root = objectMapper.readTree(responseBody);
-            return root.path("content").get(0).path("text").asText();
-
+            if (deterministic) {
+                String toolName = AnalysisTools.toolForRuleType(finding.kind());
+                if (toolName == null) toolName = forcedToolForCategory(category);
+                return singleShot(systemPrompt, userJson, category,
+                        List.of(AnalysisTools.toolByName(toolName)),
+                        Map.of("type", "tool", "name", toolName));
+            }
+            if (isKnownCategory(category)) {
+                return singleShot(systemPrompt, userJson, category,
+                        AnalysisTools.toolsForCategory(category),
+                        Map.of("type", "any"));
+            }
+            return agentLoop(systemPrompt, userJson, category);
         } catch (Exception e) {
-            log.error("Claude API call failed: {}", e.getMessage(), e);
-            return getMockAnalysis(userPrompt, ctx);
+            log.error("Claude tool-use call failed: {}", e.getMessage(), e);
+            return mock(structuredContext, ctx);
         }
     }
 
-    /**
-     * Fallback mock analysis when API key is not set (for development/demo).
-     */
-    private String getMockAnalysis(String prompt, FailureAnalysisContext ctx) {
-        // ROUTING failure mock — prefer Mendr registry / DNS probe data from prompt
-        if (prompt.contains("ROUTING") || prompt.contains("unreachable") || prompt.contains("Attempted URL")) {
-            String serviceName = extractBetween(prompt, "Target Service: ", "\n");
-            String attemptedUrl = extractBetween(prompt, "Attempted URL : ", "\n");
-            String registeredBase = extractRegisteredBaseUrl(prompt, serviceName);
-            String probedReachable = extractReachableProbeUrl(prompt);
+    // ── Tier 1 / 2: single round trip ────────────────────────────────────────────
 
-            String suggestedNew;
-            String discoveryMethod;
-            String rootCause;
+    private AnalysisToolResult singleShot(String systemPrompt, String userJson, String category,
+                                          List<Map<String, Object>> tools, Map<String, Object> toolChoice) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", userJson));
 
-            if (registeredBase != null && attemptedUrl != null) {
-                suggestedNew = mergeBaseUrlWithAttemptedPath(registeredBase, attemptedUrl);
-                discoveryMethod = "REGISTRY_LOOKUP";
-                rootCause = String.format(
-                        "Routing mismatch: gateway attempted '%s' but Mendr registry has '%s' registered for '%s'.",
-                        attemptedUrl, registeredBase, serviceName);
-            } else if (probedReachable != null) {
-                suggestedNew = probedReachable;
-                discoveryMethod = "DNS_PROBE";
-                rootCause = String.format(
-                        "Service '%s' unreachable at '%s'. DNS probe found reachable endpoint '%s'.",
-                        serviceName, attemptedUrl, probedReachable);
-            } else {
-                suggestedNew = attemptedUrl != null
-                        ? attemptedUrl.replaceAll(":(\\d+)", ":8091")
-                        : "http://unknown-new-host:8091";
-                discoveryMethod = "AI_SUGGESTED";
-                rootCause = String.format(
-                        "Service '%s' unreachable at '%s'. No registry entry found; suggesting port correction.",
-                        serviceName, attemptedUrl);
-            }
-
-            return String.format("""
-                {
-                  "rootCause": "%s",
-                  "confidence": 0.91,
-                  "category": "ROUTING",
-                  "transformationRules": {
-                    "type": "ROUTING_OVERRIDE",
-                    "serviceName": "%s",
-                    "originalUrl": "%s",
-                    "suggestedNewUrl": "%s",
-                    "discoveryMethod": "%s"
-                  },
-                  "suggestedPermanentFix": "Align gateway routing with Mendr service registry for '%s'. Update seed data or DynamicRoutingService defaults if stale.",
-                  "impact": "HIGH"
-                }
-                """, rootCause, serviceName, attemptedUrl, suggestedNew, discoveryMethod, serviceName);
+        JsonNode response = callApi(systemPrompt, messages, tools, toolChoice);
+        JsonNode toolUse = firstToolUse(response);
+        if (toolUse == null) {
+            throw new IllegalStateException("Model returned no tool_use block");
         }
-
-        // Upstream CORS failure mock (Case 2 — Service B rejected Origin)
-        if (prompt.contains("CORS_UPSTREAM") || prompt.contains("UPSTREAM CORS")
-                || prompt.contains("do NOT suggest CORS_ALLOW")) {
-            String callerOrigin = extractBetween(prompt, "callerOrigin (real Origin from caller envelope): ", "\n");
-            if (callerOrigin == null) callerOrigin = extractBetween(prompt, "requestOrigin : ", "\n");
-            if (callerOrigin == null) callerOrigin = extractBetween(prompt, "Blocked real Origin: ", "\n");
-
-            String outboundOrigin = extractBetween(prompt, "outboundOrigin (Origin Service B accepts): ", "\n");
-            if (outboundOrigin == null && ctx != null && ctx.corsUpstreamDiff().hasDeterministicRule()) {
-                outboundOrigin = ctx.corsUpstreamDiff().outboundOrigin();
-            }
-            if (outboundOrigin == null) {
-                outboundOrigin = firstOriginFromList(prompt, "upstreamAllowedOrigins");
-            }
-            if (outboundOrigin == null) outboundOrigin = "http://localhost:8090";
-
-            String sourceService = extractBetween(prompt, "Source Service: ", "\n");
-            if (sourceService != null && sourceService.contains(" (unchanged")) {
-                sourceService = sourceService.substring(0, sourceService.indexOf(" (unchanged")).trim();
-            }
-            String targetService = extractBetween(prompt, "Target Service: ", "\n");
-            String endpoint = extractBetween(prompt, "endpointPath: ", "\n");
-            if (endpoint == null) endpoint = extractBetween(prompt, "endpointPath  : ", "\n");
-            if (endpoint == null) endpoint = "/api/payments/process";
-            endpoint = EndpointNormalizer.normalize(endpoint);
-
-            if (callerOrigin == null && ctx != null) callerOrigin = ctx.event().getRequestOrigin();
-            if (callerOrigin == null) callerOrigin = "http://order-service-v2:9090";
-            if (sourceService == null) sourceService = "order-service";
-            if (targetService == null) targetService = "payment-service";
-            return String.format("""
-                {
-                  "rootCause": "Service B rejected the real Origin '%s'; Mendr can rewrite Origin on the wire to '%s' until B is updated.",
-                  "confidence": 0.93,
-                  "category": "CORS_UPSTREAM",
-                  "transformationRules": {
-                    "type": "CORS_ORIGIN_OVERRIDE",
-                    "sourceService": "%s",
-                    "targetService": "%s",
-                    "endpoint": "%s",
-                    "callerOrigin": "%s",
-                    "outboundOrigin": "%s",
-                    "rewriteResponseAcao": true
-                  },
-                  "suggestedPermanentFix": "Add '%s' to the CORS allowed-origins list in Service B's configuration. Deploy the change and remove this temporary override.",
-                  "impact": "HIGH"
-                }
-                """, callerOrigin, outboundOrigin, sourceService, targetService, endpoint,
-                    callerOrigin, outboundOrigin, callerOrigin);
-        }
-
-        // Mendr edge CORS failure mock (Case 1)
-        if (prompt.contains("CORS CONTEXT (Mendr edge)") || prompt.contains("STRUCTURED CORS EDGE DIFF")) {
-            String origin = extractBetween(prompt, "blockedOrigin (must become newOrigin in CORS_ALLOW): ", "\n");
-            if (origin == null) origin = extractBetween(prompt, "Blocked Origin: ", "\n");
-            if (origin == null) origin = extractBetween(prompt, "requestOrigin : ", "\n");
-            String targetService = extractBetween(prompt, "Target Service: ", "\n");
-            return String.format("""
-                {
-                  "rootCause": "Service A has a new URL ('%s') which is not in Service B's CORS allowlist. This happens when Service A is redeployed to a new host/port without updating Service B's CORS configuration.",
-                  "confidence": 0.92,
-                  "category": "CORS",
-                  "transformationRules": {
-                    "type": "CORS_ALLOW",
-                    "targetService": "%s",
-                    "newOrigin": "%s",
-                    "previousOrigin": null,
-                    "allowedMethods": "GET,POST,PUT,DELETE,PATCH,OPTIONS",
-                    "allowedHeaders": "*"
-                  },
-                  "suggestedPermanentFix": "Add '%s' to the CORS allowed-origins list in Service B's configuration (application.yml / Spring Security). Deploy the change and remove this temporary rule.",
-                  "impact": "HIGH"
-                }
-                """, origin, targetService, origin, origin);
-        }
-
-        // Schema mismatch mocks
-        if (prompt.contains("user_id") && prompt.contains("customer_id")) {
-            return """
-                {
-                  "rootCause": "Field name mismatch. Service A sends 'user_id' but Service B expects 'customer_id'. Common schema drift when teams evolve independently.",
-                  "confidence": 0.95,
-                  "category": "SCHEMA_MISMATCH",
-                  "transformationRules": {
-                    "type": "FIELD_RENAME",
-                    "mappings": { "user_id": "customer_id" }
-                  },
-                  "suggestedPermanentFix": "Standardize field naming. Update Service A to emit 'customer_id', add an OpenAPI contract test to prevent drift.",
-                  "impact": "HIGH"
-                }
-                """;
-        }
-
-        return """
-            {
-              "rootCause": "Schema mismatch detected. The request payload does not match the expected contract of the target service.",
-              "confidence": 0.82,
-              "category": "SCHEMA_MISMATCH",
-              "transformationRules": {
-                "type": "FIELD_RENAME",
-                "mappings": {}
-              },
-              "suggestedPermanentFix": "Review and align API contracts. Add contract testing to your CI/CD pipeline.",
-              "impact": "MEDIUM"
-            }
-            """;
+        return toResult(toolUse);
     }
 
-    private String firstOriginFromList(String prompt, String label) {
-        int idx = prompt.indexOf(label);
-        if (idx < 0) return null;
-        int http = prompt.indexOf("http://", idx);
-        if (http < 0) return null;
-        int end = prompt.indexOf('"', http);
-        if (end < 0) end = prompt.indexOf('\n', http);
-        if (end < 0) end = prompt.indexOf(',', http);
-        return end > http ? prompt.substring(http, end).trim() : null;
-    }
+    // ── Tier 3: bounded agent loop with read-only context tools ─────────────────
 
-    private String extractBetween(String text, String start, String end) {
-        int s = text.indexOf(start);
-        if (s < 0) return null;
-        s += start.length();
-        int e = text.indexOf(end, s);
-        return e < 0 ? text.substring(s).trim() : text.substring(s, e).trim();
-    }
+    private AnalysisToolResult agentLoop(String systemPrompt, String userJson, String category) {
+        List<Map<String, Object>> messages = new ArrayList<>();
+        messages.add(Map.of("role", "user", "content", userJson));
 
-    /** Parse "payment-service → http://localhost:8091" from registry section. */
-    private String extractRegisteredBaseUrl(String prompt, String serviceName) {
-        if (serviceName == null) return null;
-        String marker = serviceName + " → ";
-        int idx = prompt.indexOf(marker);
-        if (idx < 0) {
-            String registered = extractBetween(prompt, "Registered URL: ", "\n");
-            if (registered != null) return registered;
-            return null;
-        }
-        int start = idx + marker.length();
-        int end = prompt.indexOf('\n', start);
-        String url = (end < 0 ? prompt.substring(start) : prompt.substring(start, end)).trim();
-        int bracket = url.indexOf(" [");
-        return bracket > 0 ? url.substring(0, bracket).trim() : url;
-    }
+        List<Map<String, Object>> tools = new ArrayList<>(ContextToolExecutor.CONTEXT_TOOLS);
+        tools.addAll(AnalysisTools.toolsForCategory(category));
 
-    private String extractReachableProbeUrl(String prompt) {
-        int section = prompt.indexOf("Recent DNS/health probes");
-        if (section < 0) return null;
-        String probes = prompt.substring(section);
-        for (String line : probes.split("\n")) {
-            if (line.contains("REACHABLE")) {
-                int dash = line.indexOf(" - ");
-                if (dash >= 0) {
-                    String url = line.substring(dash + 3, line.indexOf(" ✓")).trim();
-                    if (!url.isBlank()) return url;
-                }
+        for (int turn = 0; turn < maxAgentTurns; turn++) {
+            boolean lastTurn = turn == maxAgentTurns - 1;
+            // On the final turn, force a propose_* decision; otherwise let it explore or decide.
+            Map<String, Object> toolChoice = lastTurn
+                    ? Map.of("type", "any")
+                    : Map.of("type", "auto");
+            List<Map<String, Object>> turnTools = lastTurn ? AnalysisTools.toolsForCategory(category) : tools;
+
+            JsonNode response = callApi(systemPrompt, messages, turnTools, toolChoice);
+            List<JsonNode> toolUses = allToolUses(response);
+
+            JsonNode proposal = firstProposeTool(toolUses);
+            if (proposal != null) {
+                return toResult(proposal);
             }
+
+            if (toolUses.isEmpty()) {
+                // No tool call at all — nudge once more or break.
+                messages.add(assistantContent(response));
+                messages.add(Map.of("role", "user",
+                        "content", "Call one propose_* tool now with your best fix."));
+                continue;
+            }
+
+            // Execute context tools and feed results back.
+            messages.add(assistantContent(response));
+            List<Map<String, Object>> toolResults = new ArrayList<>();
+            for (JsonNode tu : toolUses) {
+                String name = tu.path("name").asText();
+                String id = tu.path("id").asText();
+                Map<String, Object> input = toMap(tu.path("input"));
+                Object result = contextToolExecutor.execute(name, input);
+                toolResults.add(Map.of(
+                        "type", "tool_result",
+                        "tool_use_id", id,
+                        "content", serialize(result)));
+            }
+            messages.add(Map.of("role", "user", "content", toolResults));
+        }
+
+        // Exhausted turns without a proposal: force one explicit final call.
+        JsonNode response = callApi(systemPrompt, messages,
+                AnalysisTools.toolsForCategory(category), Map.of("type", "any"));
+        JsonNode toolUse = firstToolUse(response);
+        if (toolUse == null) throw new IllegalStateException("Agent loop ended with no tool_use");
+        return toResult(toolUse);
+    }
+
+    // ── HTTP ──────────────────────────────────────────────────────────────────────
+
+    private JsonNode callApi(String systemPrompt, List<Map<String, Object>> messages,
+                             List<Map<String, Object>> tools, Map<String, Object> toolChoice) {
+        Map<String, Object> requestBody = new LinkedHashMap<>();
+        requestBody.put("model", model);
+        requestBody.put("max_tokens", maxTokens);
+        requestBody.put("system", systemPrompt);
+        requestBody.put("messages", messages);
+        requestBody.put("tools", tools);
+        requestBody.put("tool_choice", toolChoice);
+
+        WebClient client = webClientBuilder
+                .baseUrl("https://api.anthropic.com")
+                .defaultHeader("x-api-key", apiKey)
+                .defaultHeader("anthropic-version", "2023-06-01")
+                .defaultHeader("Content-Type", "application/json")
+                .build();
+
+        String responseBody = client.post()
+                .uri("/v1/messages")
+                .bodyValue(requestBody)
+                .retrieve()
+                .bodyToMono(String.class)
+                .block();
+
+        try {
+            return objectMapper.readTree(responseBody);
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not parse Anthropic response: " + e.getMessage(), e);
+        }
+    }
+
+    private AnalysisToolResult toResult(JsonNode toolUse) {
+        String name = toolUse.path("name").asText();
+        Map<String, Object> input = toMap(toolUse.path("input"));
+        return AnalysisToolResult.fromToolInput(AnalysisToolResult.Source.CLAUDE, model, name, input);
+    }
+
+    // ── Response helpers ────────────────────────────────────────────────────────
+
+    private JsonNode firstToolUse(JsonNode response) {
+        for (JsonNode block : response.path("content")) {
+            if ("tool_use".equals(block.path("type").asText())) return block;
         }
         return null;
     }
 
-    /** Base URL for ROUTING_OVERRIDE: same host as attempted URL, port from registry. */
-    private String mergeBaseUrlWithAttemptedPath(String registeredBase, String attemptedUrl) {
-        try {
-            java.net.URI reg = java.net.URI.create(registeredBase);
-            java.net.URI att = java.net.URI.create(attemptedUrl);
-            String host = att.getHost() != null ? att.getHost() : reg.getHost();
-            int port = reg.getPort() > 0 ? reg.getPort() : (reg.getScheme().equals("https") ? 443 : 80);
-            return reg.getScheme() + "://" + host + ":" + port;
-        } catch (Exception e) {
-            return registeredBase;
+    private List<JsonNode> allToolUses(JsonNode response) {
+        List<JsonNode> out = new ArrayList<>();
+        for (JsonNode block : response.path("content")) {
+            if ("tool_use".equals(block.path("type").asText())) out.add(block);
         }
+        return out;
+    }
+
+    private JsonNode firstProposeTool(List<JsonNode> toolUses) {
+        for (JsonNode tu : toolUses) {
+            String name = tu.path("name").asText();
+            if (AnalysisTools.ruleTypeForTool(name) != null) return tu;
+        }
+        return null;
+    }
+
+    private Map<String, Object> assistantContent(JsonNode response) {
+        List<Object> content = new ArrayList<>();
+        for (JsonNode block : response.path("content")) {
+            content.add(toMap(block));
+        }
+        return Map.of("role", "assistant", "content", content);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> toMap(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) return Map.of();
+        return objectMapper.convertValue(node, Map.class);
+    }
+
+    private String serialize(Object obj) {
+        try {
+            return objectMapper.writeValueAsString(obj);
+        } catch (Exception e) {
+            return String.valueOf(obj);
+        }
+    }
+
+    private boolean isKnownCategory(String category) {
+        return switch (category == null ? "" : category) {
+            case "SCHEMA_MISMATCH", "RESPONSE_MISMATCH", "CORS", "CORS_UPSTREAM", "ROUTING" -> true;
+            default -> false;
+        };
+    }
+
+    private String forcedToolForCategory(String category) {
+        return switch (category == null ? "" : category) {
+            case "CORS_UPSTREAM" -> "propose_cors_origin_override";
+            case "CORS" -> "propose_cors_allow";
+            case "ROUTING" -> "propose_routing_override";
+            default -> "propose_field_rename";
+        };
+    }
+
+    // ── Mock fallback: same typed result, no API key needed ──────────────────────
+
+    AnalysisToolResult mock(StructuredFailureContext sc, FailureAnalysisContext ctx) {
+        return MockAnalysis.build(sc, ctx, model);
     }
 }

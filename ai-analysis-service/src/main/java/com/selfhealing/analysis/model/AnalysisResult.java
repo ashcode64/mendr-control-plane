@@ -43,6 +43,20 @@ public class AnalysisResult {
     @Column(name = "ai_model")
     private String aiModel;
 
+    /** Provenance: was this a real Claude analysis or the mock fallback? */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "analysis_source")
+    private AnalysisSource analysisSource;
+
+    /**
+     * Audit-only metadata (allowlists, validation reason) kept OFF the deployed
+     * {@code transformationRules} map. Persisted for the dashboard/audit trail,
+     * never compiled into a route snapshot.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "analysis_metadata", columnDefinition = "jsonb")
+    private Map<String, Object> analysisMetadata;
+
     @Column(name = "analyzed_at")
     private LocalDateTime analyzedAt;
 
@@ -57,5 +71,9 @@ public class AnalysisResult {
 
     public enum AnalysisStatus {
         PENDING_APPROVAL, APPROVED, REJECTED
+    }
+
+    public enum AnalysisSource {
+        CLAUDE, MOCK
     }
 }
