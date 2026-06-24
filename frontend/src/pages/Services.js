@@ -254,10 +254,168 @@ function ContractModal({ service, onClose }) {
   );
 }
 
+const SAMPLE_MANIFEST = `apiVersion: mendr/v1
+kind: ServiceManifest
+
+service:
+  name: order-service
+  baseUrl: http://order-service:8090
+  namespace: default
+  description: Handles order creation and management
+  teamEmail: orders@company.com
+  healthEndpoint: /actuator/health
+  timeoutMs: 10000
+  retryCount: 2
+  auth:
+    type: NONE            # NONE | JWT_BEARER | API_KEY_HEADER | API_KEY_QUERY | BASIC
+    # headerName: Authorization
+    # secretRef: ORDER_SERVICE_TOKEN   # env var NAME only, never a secret value
+  allowedCallerOrigins:
+    - https://app.company.com
+
+inbound:                  # APIs this service EXPOSES
+  - endpoint: /api/orders
+    method: POST
+    version: "1.0"
+    description: Create a new order
+    request:
+      example:
+        customerId: "CUS-1"
+        items:
+          - sku: "ABC"
+            qty: 2
+    response:
+      example:
+        orderId: "ORD-1"
+        status: "CREATED"
+
+outbound:                 # calls this service MAKES (creates routes)
+  - targetService: payment-service
+    endpoint: /api/payments/charge
+    method: POST
+    matchType: EXACT      # only EXACT supported today
+    description: Charge the customer for the order
+    request:
+      example:
+        amount: 99.99
+        currency: USD
+    response:
+      example:
+        paymentId: "PAY-1"
+        status: "SUCCESS"
+`;
+
+function ImportManifestModal({ onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const downloadSample = () => {
+    const blob = new Blob([SAMPLE_MANIFEST], { type: 'text/yaml' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mendr.yaml';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImport = async () => {
+    if (!file) { toast.error('Choose a manifest file first'); return; }
+    setImporting(true);
+    setResult(null);
+    try {
+      const res = await api.importManifest(file);
+      setResult(res);
+      toast.success(`Imported ${res.service}: ${res.routesCreated} route(s), ${res.contractsCreated} contract(s)`);
+      onImported();
+    } catch (e) {
+      toast.error('Import failed: ' + e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 1000,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}
+         onClick={onClose}>
+      <div style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+                    borderRadius: 'var(--radius-lg)', padding: '28px', maxWidth: '640px',
+                    width: '100%', maxHeight: '90vh', overflowY: 'auto' }}
+           onClick={e => e.stopPropagation()}>
+
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+          <div style={{ fontSize: '16px', fontWeight: 700 }}>📦 Import Service Manifest</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '20px' }}>×</button>
+        </div>
+
+        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.7, marginBottom: '16px' }}>
+          Upload a single <code style={{ fontFamily: 'var(--font-mono)' }}>mendr.yaml</code> or <code style={{ fontFamily: 'var(--font-mono)' }}>mendr.json</code> to register
+          the service, its example request/response payloads, and its outbound routes in one step.
+          Examples are fed to the AI analysis engine for richer healing.
+        </div>
+
+        <button onClick={downloadSample} style={{
+          marginBottom: '16px', padding: '6px 14px', background: 'rgba(79,124,255,0.1)',
+          border: '1px solid rgba(79,124,255,0.2)', color: 'var(--accent-blue)',
+          borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+        }}>⬇ Download sample mendr.yaml</button>
+
+        <div>
+          <label style={S.label}>Manifest file (.yaml / .yml / .json)</label>
+          <input type="file" accept=".yaml,.yml,.json,application/json,text/yaml"
+            onChange={e => { setFile(e.target.files?.[0] || null); setResult(null); }}
+            style={{ ...S.input, padding: '8px' }} />
+        </div>
+
+        {result && (
+          <div style={{ marginTop: '18px', background: 'var(--bg-card)', border: '1px solid var(--border)',
+                        borderRadius: 'var(--radius-md)', padding: '14px' }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#10e88a', marginBottom: '8px' }}>
+              ✓ Imported {result.service}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+              <strong>{result.routesCreated}</strong> route(s), <strong>{result.contractsCreated}</strong> contract(s) created.
+            </div>
+            {result.routes?.length > 0 && (
+              <ul style={{ margin: '8px 0 0', paddingLeft: '18px', fontSize: '11px',
+                           fontFamily: 'var(--font-mono)', color: 'var(--accent-cyan)' }}>
+                {result.routes.map((r, i) => <li key={i}>{r}</li>)}
+              </ul>
+            )}
+            {result.warnings?.length > 0 && (
+              <div style={{ marginTop: '10px' }}>
+                <div style={{ fontSize: '11px', fontWeight: 600, color: '#f5a623', marginBottom: '4px' }}>Warnings</div>
+                <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '11px', color: '#f5a623' }}>
+                  {result.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '12px', marginTop: '24px', paddingTop: '16px', borderTop: '1px solid var(--border)' }}>
+          <button onClick={handleImport} disabled={importing || !file} style={{
+            flex: 1, padding: '10px', background: 'var(--accent-blue)', border: 'none',
+            color: '#050a14', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+            fontWeight: 700, fontSize: '13px', opacity: (importing || !file) ? 0.6 : 1,
+          }}>{importing ? 'Importing…' : 'Import Manifest'}</button>
+          <button onClick={onClose} style={{
+            padding: '10px 20px', background: 'transparent', border: '1px solid var(--border)',
+            color: 'var(--text-secondary)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', fontSize: '13px',
+          }}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Services() {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showRegister, setShowRegister] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [editingService, setEditingService] = useState(null);
   const [contractService, setContractService] = useState(null);
 
@@ -285,6 +443,7 @@ export default function Services() {
   return (
     <div style={{ animation: 'slide-in-up 0.35s ease forwards' }}>
       {showRegister && <RegisterModal onClose={() => setShowRegister(false)} onSaved={fetch} />}
+      {showImport && <ImportManifestModal onClose={() => setShowImport(false)} onImported={fetch} />}
       {editingService && <RegisterModal existing={editingService} onClose={() => setEditingService(null)} onSaved={fetch} />}
       {contractService && <ContractModal service={contractService} onClose={() => setContractService(null)} />}
 
@@ -296,11 +455,18 @@ export default function Services() {
             inject auth credentials, and run health checks.
           </div>
         </div>
-        <button onClick={() => setShowRegister(true)} style={{
-          padding: '10px 20px', background: 'var(--accent-blue)', border: 'none',
-          color: '#050a14', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-          fontWeight: 700, fontSize: '13px', flexShrink: 0,
-        }}>+ Register Service</button>
+        <div style={{ display: 'flex', gap: '10px', flexShrink: 0 }}>
+          <button onClick={() => setShowImport(true)} style={{
+            padding: '10px 20px', background: 'transparent', border: '1px solid var(--accent-blue)',
+            color: 'var(--accent-blue)', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+            fontWeight: 700, fontSize: '13px',
+          }}>📦 Import Manifest</button>
+          <button onClick={() => setShowRegister(true)} style={{
+            padding: '10px 20px', background: 'var(--accent-blue)', border: 'none',
+            color: '#050a14', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+            fontWeight: 700, fontSize: '13px',
+          }}>+ Register Service</button>
+        </div>
       </div>
 
       {/* SDK quickstart */}

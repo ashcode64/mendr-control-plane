@@ -1,19 +1,27 @@
 package com.selfhealing.gateway.controller;
 
+import com.selfhealing.gateway.dto.manifest.ManifestImportResult;
+import com.selfhealing.gateway.dto.manifest.ManifestValidationException;
 import com.selfhealing.gateway.model.ServiceContract;
 import com.selfhealing.gateway.model.ServiceRegistration;
 import com.selfhealing.gateway.repository.ServiceContractRepository;
+import com.selfhealing.gateway.service.ManifestImportService;
 import com.selfhealing.gateway.service.RouteChangedPublisher;
 import com.selfhealing.gateway.service.ServiceRegistryService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/services")
 @RequiredArgsConstructor
@@ -23,6 +31,7 @@ public class ServiceRegistryController {
     private final ServiceRegistryService    registryService;
     private final ServiceContractRepository contractRepository;
     private final RouteChangedPublisher     routeChangedPublisher;
+    private final ManifestImportService     manifestImportService;
 
     // ── Service CRUD ──────────────────────────────────────────────────────────
 
@@ -74,6 +83,55 @@ public class ServiceRegistryController {
             resp.put("checkedAt", s.getLastHealthCheck());
             return ResponseEntity.ok(resp);
         }).orElse(ResponseEntity.notFound().build());
+    }
+
+    // ── Manifest import ───────────────────────────────────────────────────────
+
+    /**
+     * Onboard a service from a single Mendr manifest (YAML or JSON).
+     *
+     * <p>Accepts either a multipart file upload (form field {@code file}) or a raw
+     * YAML/JSON request body. Registers the service, persists request/response
+     * example payloads as contracts, creates explicit outbound route declarations,
+     * and triggers a route snapshot republish to the data plane.
+     */
+    @PostMapping(value = "/import-manifest", consumes = {"multipart/form-data"})
+    public ResponseEntity<ManifestImportResult> importManifestMultipart(
+            @RequestParam("file") MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest().body(ManifestImportResult.builder()
+                    .success(false)
+                    .errors(List.of("No manifest file uploaded"))
+                    .build());
+        }
+        try {
+            String raw = new String(file.getBytes(), StandardCharsets.UTF_8);
+            return ResponseEntity.ok(manifestImportService.importManifest(raw));
+        } catch (ManifestValidationException e) {
+            return ResponseEntity.badRequest().body(ManifestImportResult.builder()
+                    .success(false)
+                    .errors(e.getErrors())
+                    .build());
+        } catch (IOException e) {
+            return ResponseEntity.badRequest().body(ManifestImportResult.builder()
+                    .success(false)
+                    .errors(List.of("Could not read uploaded file: " + e.getMessage()))
+                    .build());
+        }
+    }
+
+    /** Raw-body variant (text/yaml, application/x-yaml, or application/json). */
+    @PostMapping(value = "/import-manifest", consumes = {
+            "text/yaml", "application/x-yaml", "application/yaml", "text/plain", "application/json"})
+    public ResponseEntity<ManifestImportResult> importManifestRaw(@RequestBody String body) {
+        try {
+            return ResponseEntity.ok(manifestImportService.importManifest(body));
+        } catch (ManifestValidationException e) {
+            return ResponseEntity.badRequest().body(ManifestImportResult.builder()
+                    .success(false)
+                    .errors(e.getErrors())
+                    .build());
+        }
     }
 
     // ── Contract registration ─────────────────────────────────────────────────

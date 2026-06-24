@@ -4,6 +4,7 @@ import com.selfhealing.gateway.config.GatewayOpenRestyProperties;
 import com.selfhealing.gateway.model.ServiceContract;
 import com.selfhealing.gateway.repository.ResponseTransformationRuleRepository;
 import com.selfhealing.gateway.repository.ServiceContractRepository;
+import com.selfhealing.gateway.repository.ServiceRouteRepository;
 import com.selfhealing.gateway.repository.TransformationRuleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -16,8 +17,13 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
- * Discovers inter-service routes for Redis snapshot publishing — from active rules,
- * registered contracts, and configured baseline routes.
+ * Discovers inter-service routes for Redis snapshot publishing.
+ *
+ * <p>Primary source is the explicit, manifest-declared {@code service_routes}
+ * table. Active transform/response rules (approved healing) and baseline demo
+ * config are always included. The legacy contract-name heuristic is only used
+ * as a fallback when {@code gateway.openresty.contract-heuristic-routes-enabled}
+ * is true.
  */
 @Service
 @RequiredArgsConstructor
@@ -26,13 +32,17 @@ public class InterServiceRouteDiscovery {
     private final TransformationRuleRepository transformationRuleRepository;
     private final ResponseTransformationRuleRepository responseTransformationRuleRepository;
     private final ServiceContractRepository serviceContractRepository;
+    private final ServiceRouteRepository serviceRouteRepository;
     private final GatewayOpenRestyProperties openRestyProperties;
 
     public Set<RouteTriple> discoverAll() {
         Set<RouteTriple> routes = new HashSet<>();
+        routes.addAll(fromServiceRoutes());
         routes.addAll(fromTransformationRules());
         routes.addAll(fromResponseRules());
-        routes.addAll(fromContracts());
+        if (openRestyProperties.isContractHeuristicRoutesEnabled()) {
+            routes.addAll(fromContracts());
+        }
         routes.addAll(fromBaselineConfig());
         return routes;
     }
@@ -44,6 +54,10 @@ public class InterServiceRouteDiscovery {
         return discoverAll().stream()
                 .filter(r -> serviceName.equals(r.source()) || serviceName.equals(r.target()))
                 .collect(Collectors.toSet());
+    }
+
+    private Set<RouteTriple> fromServiceRoutes() {
+        return distinctRows(serviceRouteRepository.findDistinctActiveRoutes());
     }
 
     private Set<RouteTriple> fromTransformationRules() {

@@ -216,6 +216,31 @@ class RouteConfigSnapshotPublisherTest {
     }
 
     @Test
+    void buildFullSyncPayloadIncludesDiscoveredManifestRoute() {
+        when(routeDiscovery.discoverAll()).thenReturn(Set.of(
+                new RouteTriple("order-service", "payment-service", "/api/payments/charge")));
+        when(routeConfigService.get("order-service", "payment-service", "/api/payments/charge"))
+                .thenReturn(RouteConfig.builder()
+                        .sourceService("order-service")
+                        .targetService("payment-service")
+                        .endpoint("/api/payments/charge")
+                        .targetBaseUrl("http://localhost:8091")
+                        .registeredBaseUrl("http://localhost:8091")
+                        .authType(ServiceRegistration.AuthType.NONE)
+                        .corsActive(false)
+                        .allowedOrigins(Set.of())
+                        .hasResponseContract(false)
+                        .build());
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.get(eq("mendr:routeconfig:sync-version"))).thenReturn("3");
+
+        var payload = publisher.buildFullSyncPayload();
+
+        assertThat(payload.getRoutes())
+                .containsKey("mendr:routeconfig:order-service:payment-service:/api/payments/charge");
+    }
+
+    @Test
     void rewriteLocalHostHandles127AndLocalhost() {
         assertThat(RouteConfigSnapshotPublisher.rewriteLocalHost(
                 "http://localhost:8091", "host.docker.internal"))

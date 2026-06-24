@@ -251,6 +251,30 @@ CREATE TABLE IF NOT EXISTS service_contracts (
 CREATE INDEX idx_contracts_service    ON service_contracts(service_name, endpoint, direction);
 CREATE INDEX idx_contracts_active     ON service_contracts(is_active);
 
+-- ─── Service Routes (explicit manifest-declared inter-service calls) ────────
+-- Canonical source of inter-service routes. A row means: source_service calls
+-- target_service at endpoint. Replaces heuristic contract-name inference as the
+-- primary route source for snapshot publishing.
+-- NOTE: routing on the edge is keyed on source:target:endpoint (no method), so
+-- http_method is retained for AI/contract context only, not for route matching.
+CREATE TABLE IF NOT EXISTS service_routes (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_service  VARCHAR(255) NOT NULL,
+    target_service  VARCHAR(255) NOT NULL,
+    endpoint        VARCHAR(512) NOT NULL,
+    http_method     VARCHAR(10)  NOT NULL DEFAULT 'POST',
+    match_type      VARCHAR(20)  NOT NULL DEFAULT 'EXACT',  -- EXACT | PREFIX | TEMPLATE (only EXACT supported)
+    description     TEXT,
+    is_active       BOOLEAN      DEFAULT TRUE,
+    created_at      TIMESTAMP    DEFAULT NOW(),
+    updated_at      TIMESTAMP    DEFAULT NOW(),
+    UNIQUE (source_service, target_service, endpoint, http_method)
+);
+
+CREATE INDEX idx_service_routes_source ON service_routes(source_service);
+CREATE INDEX idx_service_routes_target ON service_routes(target_service);
+CREATE INDEX idx_service_routes_active ON service_routes(is_active);
+
 -- ─── Response Transformation Rules ───────────────────────────────────────
 -- Mirror of transformation_rules but applied to the RESPONSE from Service B
 -- before it is returned to Service A
