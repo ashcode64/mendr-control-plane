@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS transformation_rules (
     service_a VARCHAR(255) NOT NULL,
     service_b VARCHAR(255) NOT NULL,
     endpoint VARCHAR(512) NOT NULL,
-    rule_type VARCHAR(50),               -- FIELD_RENAME, TYPE_COERCE, ADD_DEFAULT, REMOVE_FIELD
+    rule_type VARCHAR(50),               -- FIELD_RENAME, TYPE_COERCE, ADD_DEFAULT, REMOVE_FIELD, FIELD_MOVE
     rule_definition JSONB NOT NULL,
     description TEXT,
     approved_by VARCHAR(255),
@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS response_transformation_rules (
     service_a    VARCHAR(255) NOT NULL,   -- the caller (who will receive the response)
     service_b    VARCHAR(255) NOT NULL,   -- the responder
     endpoint     VARCHAR(512) NOT NULL,
-    rule_type    VARCHAR(50),             -- RESPONSE_FIELD_RENAME | RESPONSE_TYPE_COERCE
+    rule_type    VARCHAR(50),             -- RESPONSE_FIELD_RENAME | RESPONSE_TYPE_COERCE | RESPONSE_FIELD_MOVE | ...
                                           -- RESPONSE_ADD_DEFAULT  | RESPONSE_REMOVE_FIELD
                                           -- RESPONSE_WRAP | RESPONSE_UNWRAP
     rule_definition JSONB NOT NULL,

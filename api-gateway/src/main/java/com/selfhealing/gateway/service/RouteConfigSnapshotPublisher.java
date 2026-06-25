@@ -290,6 +290,7 @@ public class RouteConfigSnapshotPublisher {
                     .defaults(java.util.Map.of())
                     .coercions(java.util.Map.of())
                     .removals(java.util.Set.of())
+                    .moves(java.util.List.of())
                     .build();
         }
         return TransformProgramSnapshot.builder()
@@ -301,6 +302,7 @@ public class RouteConfigSnapshotPublisher {
                 .removals(program.getRemovals())
                 .wrapKey(program.getWrapKey())
                 .unwrapKey(program.getUnwrapKey())
+                .moves(program.getMoves())
                 .build();
     }
 

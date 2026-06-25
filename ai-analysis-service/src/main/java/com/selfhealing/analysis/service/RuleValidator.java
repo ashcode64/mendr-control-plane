@@ -42,6 +42,7 @@ public final class RuleValidator {
             case "TYPE_COERCE" -> validateTypeCoerce(rules);
             case "ADD_DEFAULT" -> validateAddDefault(rules);
             case "FIELD_RENAME" -> validateFieldRename(rules);
+            case "FIELD_MOVE" -> validateFieldMove(rules);
             default -> ValidationResult.ok();
         };
     }
@@ -135,6 +136,29 @@ public final class RuleValidator {
     private static ValidationResult validateFieldRename(Map<String, Object> rules) {
         if (!(rules.get("mappings") instanceof Map<?, ?> m) || m.isEmpty()) {
             return ValidationResult.fail("mappings map is required for FIELD_RENAME");
+        }
+        return ValidationResult.ok();
+    }
+
+    private static ValidationResult validateFieldMove(Map<String, Object> rules) {
+        if (!(rules.get("moves") instanceof List<?> list) || list.isEmpty()) {
+            return ValidationResult.fail("moves list is required for FIELD_MOVE");
+        }
+        for (Object o : list) {
+            if (!(o instanceof Map<?, ?> m)) {
+                return ValidationResult.fail("each move must be an object with from/to");
+            }
+            String from = str(m.get("from"));
+            String to = str(m.get("to"));
+            if (from.isBlank() || to.isBlank()) {
+                return ValidationResult.fail("move from and to are required");
+            }
+            if (!from.startsWith("/") || !to.startsWith("/")) {
+                return ValidationResult.fail("move from/to must be absolute JSON Pointers (start with /)");
+            }
+            if (from.equals(to)) {
+                return ValidationResult.fail("move from and to must differ");
+            }
         }
         return ValidationResult.ok();
     }

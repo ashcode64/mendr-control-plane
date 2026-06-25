@@ -66,5 +66,7 @@ public class RouteConfigSnapshot {
         private Set<String> removals;
         private String wrapKey;
         private String unwrapKey;
+        /** FIELD_MOVE restructure ops: each {from, to, copy?} with JSON-Pointer paths. */
+        private List<Map<String, Object>> moves;
     }
 }

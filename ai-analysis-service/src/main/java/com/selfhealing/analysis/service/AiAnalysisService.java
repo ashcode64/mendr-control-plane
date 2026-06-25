@@ -371,12 +371,17 @@ public class AiAnalysisService {
             case "ADD_DEFAULT" -> isEmptyMap(rules.get("defaults"));
             case "FIELD_RENAME" -> isEmptyMap(rules.get("mappings"));
             case "TYPE_COERCE" -> isEmptyMap(rules.get("coercions"));
+            case "FIELD_MOVE", "RESPONSE_FIELD_MOVE" -> isEmptyList(rules.get("moves"));
             default -> false;
         };
     }
 
     private static boolean isEmptyMap(Object value) {
         return !(value instanceof Map<?, ?> map) || map.isEmpty();
+    }
+
+    private static boolean isEmptyList(Object value) {
+        return !(value instanceof List<?> list) || list.isEmpty();
     }
 
     private static String str(Object o) {

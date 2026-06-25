@@ -37,6 +37,7 @@ import java.util.Set;
 public class RouteConfigService {
 
     private static final Map<ResponseTransformationRule.ResponseRuleType, Integer> RESPONSE_RULE_PRIORITY = Map.of(
+            ResponseTransformationRule.ResponseRuleType.RESPONSE_FIELD_MOVE, 0,
             ResponseTransformationRule.ResponseRuleType.RESPONSE_FIELD_RENAME, 1,
             ResponseTransformationRule.ResponseRuleType.RESPONSE_ADD_DEFAULT, 2,
             ResponseTransformationRule.ResponseRuleType.RESPONSE_TYPE_COERCE, 3,

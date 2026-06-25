@@ -27,6 +27,23 @@ public final class SchemaMismatchAnalyzer {
             "total_amount", "amount",
             "currency_code", "currency");
 
+    /**
+     * Identity / secret leaf names that must NEVER be fabricated via ADD_DEFAULT.
+     * A missing one of these should be relocated (FIELD_MOVE) or left for the AI /
+     * human — defaulting them risks injecting fake credentials or wrong identities.
+     */
+    private static final Set<String> IDENTITY_BLOCKLIST = Set.of(
+            "token", "access_token", "refresh_token", "id_token", "jwt",
+            "password", "secret", "api_key", "apikey", "authorization",
+            "user_id", "userid", "customer_id", "account_id");
+
+    static boolean isIdentityField(String leafName) {
+        if (leafName == null) return false;
+        String n = leafName.toLowerCase(Locale.ROOT);
+        if (IDENTITY_BLOCKLIST.contains(n)) return true;
+        return n.endsWith("_id") || n.endsWith("token") || n.endsWith("password") || n.endsWith("secret");
+    }
+
     private SchemaMismatchAnalyzer() {}
 
     public static SchemaDiffResult analyze(
@@ -55,10 +72,27 @@ public final class SchemaMismatchAnalyzer {
         Set<String> requiredFields = requiredFields(receiverSchema);
         Map<String, Object> actual = flatten(actualRequest);
         Map<String, Object> sender = flatten(ContractPayloadParser.toMap(senderContract, MAPPER));
-        Map<String, Object> receiver = flatten(ContractPayloadParser.toMap(receiverContract, MAPPER));
+        Map<String, Object> receiverMap = ContractPayloadParser.toMap(receiverContract, MAPPER);
+        Map<String, Object> receiver = flatten(receiverMap);
 
         if (receiver.isEmpty() && actual.isEmpty()) {
             return SchemaDiffResult.empty();
+        }
+
+        // Priority 0 — structural restructure (FIELD_MOVE). A value the receiver
+        // expects exists in the actual payload under the SAME leaf name but at a
+        // DIFFERENT nesting depth — either direction:
+        //   un-nest: actual {credentials:{token}} vs receiver {token}
+        //   nest:    actual {user_id}            vs receiver {user_obj:{user_id}}
+        // Compared via deep JSON-Pointer leaves on BOTH sides so a relocated field
+        // is not mis-read as "missing" (and never fabricated as a default).
+        if (receiverMap != null && !receiverMap.isEmpty()) {
+            List<Map<String, Object>> moves = detectMoves(actualRequest, receiverMap, requiredFields);
+            if (!moves.isEmpty()) {
+                String summary = "Field(s) nested at the wrong depth — relocate %d field(s): %s"
+                        .formatted(moves.size(), moves);
+                return SchemaDiffResult.move(summary, moves);
+            }
         }
 
         // Ignore non-payment receiver contracts (e.g. CORS metadata accidentally stored as REQUEST)
@@ -87,17 +121,18 @@ public final class SchemaMismatchAnalyzer {
             // Only commit to MISSING_FIELD if something is genuinely missing; otherwise
             // fall through to rename/type detection (e.g. only optional fields absent).
             if (!missingFields.isEmpty()) {
-                Map<String, Object> defaults = buildDefaults(missingFields, sender, receiver);
+                // Never fabricate identity/secret fields — relocating them is the only
+                // safe automated fix (handled by FIELD_MOVE above); otherwise defer to AI.
+                Set<String> defaultable = missingFields.stream()
+                        .filter(f -> !isIdentityField(f))
+                        .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+                if (defaultable.isEmpty()) {
+                    return SchemaDiffResult.empty();
+                }
+                Map<String, Object> defaults = buildDefaults(defaultable, sender, receiver);
                 String summary = "Missing %d field(s): actual has %d fields, receiver contract has %d: %s"
-                        .formatted(missingFields.size(), actualCount, receiverCount, missingFields);
-                return new SchemaDiffResult(
-                        SchemaDiffResult.Kind.MISSING_FIELD,
-                        summary,
-                        missingFields,
-                        Map.of(),
-                        Map.of(),
-                        defaults,
-                        !defaults.isEmpty());
+                        .formatted(defaultable.size(), actualCount, receiverCount, defaultable);
+                return SchemaDiffResult.missing(summary, defaultable, defaults);
             }
         }
 
@@ -105,49 +140,90 @@ public final class SchemaMismatchAnalyzer {
         if (!renameMappings.isEmpty()) {
             String summary = "Field name mismatch (%d sender contract fields, %d receiver contract fields, %d actual fields). Renames: %s"
                     .formatted(senderCount, receiverCount, actualCount, renameMappings);
-            return new SchemaDiffResult(
-                    SchemaDiffResult.Kind.FIELD_RENAME,
-                    summary,
-                    Set.of(),
-                    renameMappings,
-                    Map.of(),
-                    Map.of(),
-                    true);
+            return SchemaDiffResult.rename(summary, renameMappings);
         }
 
         // Priority 3 — type mismatches on matching field names
         if (!typeCoercions.isEmpty()) {
             String summary = "Type mismatch on %d field(s) (%d receiver fields, %d actual fields): %s"
                     .formatted(typeCoercions.size(), receiverCount, actualCount, typeCoercions.keySet());
-            return new SchemaDiffResult(
-                    SchemaDiffResult.Kind.TYPE_MISMATCH,
-                    summary,
-                    Set.of(),
-                    Map.of(),
-                    typeCoercions,
-                    Map.of(),
-                    true);
+            return SchemaDiffResult.typeMismatch(summary, typeCoercions);
         }
 
         // Fallback when receiver empty but error text indicates missing fields
         if (receiver.isEmpty() && actualCount > 0) {
             Set<String> missingFields = findMissingFields(actual, sender, receiver, errorMessage, responsePayload);
             if (!missingFields.isEmpty()) {
-                Map<String, Object> defaults = buildDefaults(missingFields, sender, receiver);
+                Set<String> defaultable = missingFields.stream()
+                        .filter(f -> !isIdentityField(f))
+                        .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+                if (defaultable.isEmpty()) {
+                    return SchemaDiffResult.empty();
+                }
+                Map<String, Object> defaults = buildDefaults(defaultable, sender, receiver);
                 String summary = "Missing field(s) inferred from error (no receiver contract): %s"
-                        .formatted(missingFields);
-                return new SchemaDiffResult(
-                        SchemaDiffResult.Kind.MISSING_FIELD,
-                        summary,
-                        missingFields,
-                        Map.of(),
-                        Map.of(),
-                        defaults,
-                        !defaults.isEmpty());
+                        .formatted(defaultable);
+                return SchemaDiffResult.missing(summary, defaultable, defaults);
             }
         }
 
         return SchemaDiffResult.empty();
+    }
+
+    /**
+     * Detect fields the receiver expects at one nesting depth that exist in the actual
+     * payload at a DIFFERENT depth, in either direction (un-nest or nest). Returns
+     * FIELD_MOVE specs {from, to, copy:false} with JSON-Pointer paths.
+     *
+     * <p>Both sides are flattened to JSON-Pointer leaves and matched by identical leaf
+     * name. A move is proposed only when the receiver's exact pointer is absent in the
+     * actual payload but the same leaf name exists there under a different pointer —
+     * so a plain top-level rename (same depth, different name) is left to FIELD_RENAME,
+     * and an already-correctly-placed field is never touched.
+     */
+    static List<Map<String, Object>> detectMoves(
+            Map<String, Object> actualRequest,
+            Map<String, Object> receiverContract,
+            Set<String> requiredFields) {
+
+        Map<String, Object> actualLeaves = flattenToPointers(actualRequest);
+        Map<String, Object> receiverLeaves = flattenToPointers(receiverContract);
+        List<Map<String, Object>> moves = new ArrayList<>();
+        Set<String> usedFrom = new LinkedHashSet<>();
+
+        for (String toPointer : receiverLeaves.keySet()) {
+            // Already at the right place — nothing to move.
+            if (actualLeaves.containsKey(toPointer)) continue;
+
+            String leaf = leafName(toPointer);
+            boolean topLevelTarget = toPointer.indexOf('/', 1) < 0;
+            // 'required' lists are top-level field names; only gate top-level targets.
+            if (topLevelTarget && !requiredFields.isEmpty() && !requiredFields.contains(leaf)) {
+                continue;
+            }
+
+            String fromPointer = null;
+            for (String candidate : actualLeaves.keySet()) {
+                if (candidate.equals(toPointer) || usedFrom.contains(candidate)) continue;
+                if (leafName(candidate).equals(leaf)) {
+                    fromPointer = candidate;
+                    break;
+                }
+            }
+            if (fromPointer != null) {
+                Map<String, Object> mv = new LinkedHashMap<>();
+                mv.put("from", fromPointer);
+                mv.put("to", toPointer);
+                mv.put("copy", false);
+                moves.add(mv);
+                usedFrom.add(fromPointer);
+            }
+        }
+        return moves;
+    }
+
+    private static String leafName(String pointer) {
+        return pointer.substring(pointer.lastIndexOf('/') + 1);
     }
 
     /** Extract the REQUIRED field names from an inferred schema, if one is present. */
@@ -174,6 +250,35 @@ public final class SchemaMismatchAnalyzer {
             }
         });
         return flat;
+    }
+
+    /**
+     * Recursively flatten a payload into JSON-Pointer leaf paths, e.g.
+     * {@code {credentials:{token:"x"}}} -> {@code {"/credentials/token":"x"}}.
+     * Unlike {@link #flatten} this does NOT drop nested objects — it is what lets
+     * a relocated field be detected instead of mis-read as missing.
+     */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> flattenToPointers(Map<String, Object> payload) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (payload == null || payload.isEmpty()) return out;
+        collectPointers("", payload, out);
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void collectPointers(String prefix, Map<String, Object> node, Map<String, Object> out) {
+        for (Map.Entry<String, Object> e : node.entrySet()) {
+            if (e.getKey() == null) continue;
+            String token = e.getKey().replace("~", "~0").replace("/", "~1");
+            String pointer = prefix + "/" + token;
+            Object v = e.getValue();
+            if (v instanceof Map<?, ?> m && !m.isEmpty()) {
+                collectPointers(pointer, (Map<String, Object>) m, out);
+            } else if (v != null && !(v instanceof Map)) {
+                out.put(pointer, v);
+            }
+        }
     }
 
     private static Set<String> findMissingFields(

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.gateway.model.TransformationRule;
 import com.selfhealing.gateway.repository.TransformationRuleRepository;
 import com.selfhealing.gateway.util.DefaultValueNormalizer;
+import com.selfhealing.gateway.util.JsonPointer;
 import com.selfhealing.gateway.util.TypeCoercer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -63,12 +64,38 @@ public class TransformationEngine {
             return result;
         }
 
+        applyMoves(result, def.get("moves"));
         applyFieldRenames(result, def.get("mappings"));
         applyDefaults(result, def.get("defaults"));
         applyTypeCoercions(result, def.get("coercions"));
         applyRemovals(result, def.get("fields"));
 
         return result;
+    }
+
+    /**
+     * FIELD_MOVE: relocate a value across nesting levels via JSON Pointers.
+     * Mirrors the Lua edge {@code transform.apply_program} move step exactly.
+     */
+    @SuppressWarnings("unchecked")
+    private void applyMoves(Map<String, Object> result, Object movesObj) {
+        if (!(movesObj instanceof List<?> moves)) return;
+        for (Object item : moves) {
+            if (!(item instanceof Map<?, ?> mv)) continue;
+            Object from = mv.get("from");
+            Object to = mv.get("to");
+            if (from == null || to == null) continue;
+            boolean copy = mv.get("copy") instanceof Boolean b && b;
+            String[] fromTokens = JsonPointer.split(from.toString());
+            String[] toTokens = JsonPointer.split(to.toString());
+            if (fromTokens == null || toTokens == null) continue;
+            Object value = JsonPointer.get(result, fromTokens);
+            if (value == null) continue;
+            JsonPointer.set(result, toTokens, value);
+            if (!copy) {
+                JsonPointer.delete(result, fromTokens);
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")

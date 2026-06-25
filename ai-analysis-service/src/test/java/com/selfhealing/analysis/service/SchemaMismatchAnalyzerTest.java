@@ -180,6 +180,56 @@ class SchemaMismatchAnalyzerTest {
     }
 
     @Test
+    void detectsMoveWhenIdentityFieldIsNestedTooDeep() {
+        // actual nests token under credentials; receiver wants it at the top level.
+        Map<String, Object> recv = Map.of("token", "JWT");
+        Map<String, Object> actual = Map.of("credentials", Map.of("token", "JWT"));
+
+        SchemaDiffResult diff = SchemaMismatchAnalyzer.analyze(
+                actual, null, recv, "token is required", null);
+
+        assertEquals(SchemaDiffResult.Kind.FIELD_MOVE, diff.kind());
+        assertTrue(diff.hasDeterministicRule());
+        Map<String, Object> rules = diff.toTransformationRules();
+        assertEquals("FIELD_MOVE", rules.get("type"));
+        java.util.List<?> moves = (java.util.List<?>) rules.get("moves");
+        assertEquals(1, moves.size());
+        Map<?, ?> mv = (Map<?, ?>) moves.get(0);
+        assertEquals("/credentials/token", mv.get("from"));
+        assertEquals("/token", mv.get("to"));
+        assertEquals(false, mv.get("copy"));
+    }
+
+    @Test
+    void detectsMoveWhenReceiverExpectsDeeperNesting() {
+        // actual has flat user_id; receiver wants it nested under user_obj.
+        Map<String, Object> recv = new LinkedHashMap<>();
+        recv.put("user_obj", Map.of("user_id", 7));
+        recv.put("amount_cents", 10);
+        Map<String, Object> actual = new LinkedHashMap<>();
+        actual.put("user_id", 7);
+        actual.put("amount_cents", 10);
+
+        SchemaDiffResult diff = SchemaMismatchAnalyzer.analyze(
+                actual, null, recv, "user_obj.user_id is required", null);
+
+        assertEquals(SchemaDiffResult.Kind.FIELD_MOVE, diff.kind());
+        java.util.List<?> moves = (java.util.List<?>) diff.toTransformationRules().get("moves");
+        assertEquals(1, moves.size());
+        Map<?, ?> mv = (Map<?, ?>) moves.get(0);
+        assertEquals("/user_id", mv.get("from"));
+        assertEquals("/user_obj/user_id", mv.get("to"));
+    }
+
+    @Test
+    void doesNotProposeMoveForPlainTopLevelRename() {
+        // same depth, different name → FIELD_RENAME, never FIELD_MOVE.
+        SchemaDiffResult diff = SchemaMismatchAnalyzer.analyze(
+                snakeActual, senderSnake, receiver, "customerId is required", null);
+        assertEquals(SchemaDiffResult.Kind.FIELD_RENAME, diff.kind());
+    }
+
+    @Test
     void emptyAddDefaultIsNotDeterministic() {
         SchemaDiffResult diff = new SchemaDiffResult(
                 SchemaDiffResult.Kind.MISSING_FIELD,
@@ -188,6 +238,7 @@ class SchemaMismatchAnalyzerTest {
                 Map.of(),
                 Map.of(),
                 Map.of(),
+                java.util.List.of(),
                 true);
         assertFalse(diff.hasDeterministicRule());
         assertTrue(diff.toTransformationRules().containsKey("defaults"));

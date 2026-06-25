@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.gateway.model.ResponseTransformationRule;
 import com.selfhealing.gateway.repository.ResponseTransformationRuleRepository;
 import com.selfhealing.gateway.util.DefaultValueNormalizer;
+import com.selfhealing.gateway.util.JsonPointer;
 import com.selfhealing.gateway.util.TypeCoercer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -21,6 +22,7 @@ import java.util.concurrent.TimeUnit;
  * Applied after Service B responds, before the gateway returns
  * the response to Service A. Handles:
  *
+ *   RESPONSE_FIELD_MOVE   — relocate a field across nesting levels (applied first)
  *   RESPONSE_FIELD_RENAME — rename a field in the response body
  *   RESPONSE_TYPE_COERCE  — coerce a response field to correct type
  *   RESPONSE_ADD_DEFAULT  — add a missing field Service A expects
@@ -42,6 +44,7 @@ public class ResponseTransformationEngine {
     private static final long   CACHE_TTL_SECS  = 60;
 
     private static final Map<ResponseTransformationRule.ResponseRuleType, Integer> RULE_PRIORITY = Map.of(
+            ResponseTransformationRule.ResponseRuleType.RESPONSE_FIELD_MOVE, 0,
             ResponseTransformationRule.ResponseRuleType.RESPONSE_FIELD_RENAME, 1,
             ResponseTransformationRule.ResponseRuleType.RESPONSE_ADD_DEFAULT, 2,
             ResponseTransformationRule.ResponseRuleType.RESPONSE_TYPE_COERCE, 3,
@@ -71,6 +74,7 @@ public class ResponseTransformationEngine {
         Map<String, Object> def   = rule.getRuleDefinition();
 
         switch (rule.getRuleType()) {
+            case RESPONSE_FIELD_MOVE -> applyMoves(result, def.get("moves"));
             case RESPONSE_FIELD_RENAME -> {
                 Map<String, String> mappings = (Map<String, String>) def.get("mappings");
                 if (mappings != null) {
@@ -119,6 +123,32 @@ public class ResponseTransformationEngine {
             default -> log.warn("Unknown response rule type: {}", rule.getRuleType());
         }
         return result;
+    }
+
+    /**
+     * Relocate fields across nesting levels (RESPONSE_FIELD_MOVE). Mirrors the request-side
+     * {@code TransformationEngine.applyMoves} and the Lua edge {@code transform.lua} (moves
+     * first, JSON-Pointer paths, prune empty parents).
+     */
+    @SuppressWarnings("unchecked")
+    private void applyMoves(Map<String, Object> result, Object movesObj) {
+        if (!(movesObj instanceof List<?> moves)) return;
+        for (Object item : moves) {
+            if (!(item instanceof Map<?, ?> mv)) continue;
+            Object from = mv.get("from");
+            Object to = mv.get("to");
+            if (from == null || to == null) continue;
+            boolean copy = mv.get("copy") instanceof Boolean b && b;
+            String[] fromTokens = JsonPointer.split(from.toString());
+            String[] toTokens = JsonPointer.split(to.toString());
+            if (fromTokens == null || toTokens == null) continue;
+            Object value = JsonPointer.get(result, fromTokens);
+            if (value == null) continue;
+            JsonPointer.set(result, toTokens, value);
+            if (!copy) {
+                JsonPointer.delete(result, fromTokens);
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")

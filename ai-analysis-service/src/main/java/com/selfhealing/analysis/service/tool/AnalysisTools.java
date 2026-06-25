@@ -63,6 +63,20 @@ public final class AnalysisTools {
                     p("suggestedPermanentFix", strType())),
             List.of("fields", "confidence", "rootCause"));
 
+    public static final Map<String, Object> PROPOSE_FIELD_MOVE = tool(
+            "propose_field_move",
+            "Fix a request schema mismatch by RELOCATING a field across nesting levels (restructure). "
+                    + "Use when a value the receiver expects exists in the actual payload but at the WRONG depth "
+                    + "(e.g. actual {credentials:{token}} but receiver wants top-level {token}; or actual {user_id} "
+                    + "but receiver wants {user_obj:{user_id}}). Prefer this over ADD_DEFAULT for identity/secret "
+                    + "fields (token, *_id, password) — never fabricate those. Paths are JSON Pointers like /credentials/token.",
+            props(
+                    p("moves", moveArr()),
+                    p("confidence", num()),
+                    p("rootCause", strType()),
+                    p("suggestedPermanentFix", strType())),
+            List.of("moves", "confidence", "rootCause"));
+
     // ── Response ────────────────────────────────────────────────────────────────
 
     public static final Map<String, Object> PROPOSE_RESPONSE_FIELD_RENAME = tool(
@@ -174,6 +188,7 @@ public final class AnalysisTools {
         register(PROPOSE_ADD_DEFAULT, "ADD_DEFAULT");
         register(PROPOSE_TYPE_COERCE, "TYPE_COERCE");
         register(PROPOSE_REMOVE_FIELD, "REMOVE_FIELD");
+        register(PROPOSE_FIELD_MOVE, "FIELD_MOVE");
         register(PROPOSE_RESPONSE_FIELD_RENAME, "RESPONSE_FIELD_RENAME");
         register(PROPOSE_RESPONSE_ADD_DEFAULT, "RESPONSE_ADD_DEFAULT");
         register(PROPOSE_RESPONSE_TYPE_COERCE, "RESPONSE_TYPE_COERCE");
@@ -189,7 +204,7 @@ public final class AnalysisTools {
     public static List<Map<String, Object>> toolsForCategory(String category) {
         return switch (category == null ? "" : category) {
             case "SCHEMA_MISMATCH" -> List.of(PROPOSE_FIELD_RENAME, PROPOSE_ADD_DEFAULT,
-                    PROPOSE_TYPE_COERCE, PROPOSE_REMOVE_FIELD);
+                    PROPOSE_TYPE_COERCE, PROPOSE_REMOVE_FIELD, PROPOSE_FIELD_MOVE);
             case "RESPONSE_MISMATCH" -> List.of(PROPOSE_RESPONSE_FIELD_RENAME, PROPOSE_RESPONSE_ADD_DEFAULT,
                     PROPOSE_RESPONSE_TYPE_COERCE, PROPOSE_RESPONSE_WRAP, PROPOSE_RESPONSE_UNWRAP);
             case "CORS_UPSTREAM" -> List.of(PROPOSE_CORS_ORIGIN_OVERRIDE);
@@ -267,5 +282,22 @@ public final class AnalysisTools {
 
     private static Map<String, Object> arr(String description) {
         return Map.of("type", "array", "items", Map.of("type", "string"), "description", description);
+    }
+
+    /** Array of move specs: each {from, to, copy?} with JSON-Pointer string paths. */
+    private static Map<String, Object> moveArr() {
+        Map<String, Object> itemProps = new LinkedHashMap<>();
+        itemProps.put("from", Map.of("type", "string",
+                "description", "JSON Pointer to the value's current location, e.g. /credentials/token"));
+        itemProps.put("to", Map.of("type", "string",
+                "description", "JSON Pointer to the value's required location, e.g. /token"));
+        itemProps.put("copy", Map.of("type", "boolean",
+                "description", "true to keep the source (copy); default false (move/delete source)"));
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("type", "object");
+        item.put("properties", itemProps);
+        item.put("required", List.of("from", "to"));
+        return Map.of("type", "array", "items", item,
+                "description", "Field relocations across nesting levels (JSON Pointer paths)");
     }
 }
