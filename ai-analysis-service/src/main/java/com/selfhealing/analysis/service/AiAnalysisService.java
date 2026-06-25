@@ -1,10 +1,11 @@
 package com.selfhealing.analysis.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.dto.ApiFailureEvent;
 import com.selfhealing.analysis.model.AnalysisResult;
 import com.selfhealing.analysis.repository.AnalysisResultRepository;
+import com.selfhealing.analysis.service.context.StructuredContextAssembler;
+import com.selfhealing.analysis.service.context.StructuredFailureContext;
+import com.selfhealing.analysis.service.tool.AnalysisToolResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,7 +38,6 @@ public class AiAnalysisService {
     private final ClaudeApiClient          claudeClient;
     private final AnalysisResultRepository analysisRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
-    private final ObjectMapper             objectMapper;
     private final JdbcTemplate             jdbcTemplate;
     private final FailureContextEnricher   contextEnricher;
 
@@ -47,163 +47,56 @@ public class AiAnalysisService {
     private static final String TOPIC = "api.analysis.results";
 
     // ── System Prompts ────────────────────────────────────────────────────────
+    //
+    // The structured JSON user turn and the per-tool input_schema descriptions now
+    // carry the field semantics and per-rule constraints that the old flat-text
+    // glossary / negative-example prose strained to convey. System prompts are kept
+    // short: role, the single decision to make, and "call exactly one propose_* tool".
 
     private static final String SYS_SCHEMA = """
-        You are an expert distributed systems engineer specialising in API contract analysis.
-        Analyse the schema mismatch between two microservices using the failure details and,
-        where provided, the registered example payloads (contracts).
-        Respond ONLY with valid JSON. No markdown, no code blocks, no preamble.
-        {
-          "rootCause": "concise description",
-          "confidence": 0.XX,
-          "category": "SCHEMA_MISMATCH",
-          "transformationRules": {
-            "type": "FIELD_RENAME|ADD_DEFAULT|TYPE_COERCE|REMOVE_FIELD",
-            "mappings": { "old_field": "new_field" },
-            "defaults": {},
-            "coercions": {},
-            "fields": []
-          },
-          "suggestedPermanentFix": "dev team action",
-          "impact": "HIGH|MEDIUM|LOW"
-        }
-        MANDATORY schema analysis priority (when STRUCTURED SCHEMA DIFF section is present, follow it):
-        1. Actual has FEWER fields than receiver contract → ADD_DEFAULT only
-        2. Same field count + name mismatches (e.g. snake_case vs camelCase) → FIELD_RENAME only
-        3. Same field count + type mismatches → TYPE_COERCE only
-        Compare actual vs receiver FIELD COUNTS first; do NOT suggest ADD_DEFAULT when counts match.
-        MANDATORY for schema mismatches with multiple field renames:
-        - transformationRules MUST be a single JSON object, NEVER an array.
-        - Put ALL field renames in one mappings object (e.g. customer_id→customerId, total_amount→amount).
-        - Do NOT use array form for mappings; use { "snake_field": "camelField" } only.
-        MANDATORY for TYPE_COERCE:
-        - coercions values MUST be one of: double, integer, long, string, boolean, decimal
-        - Example: { "type": "TYPE_COERCE", "coercions": { "amount": "double" } }
-        MANDATORY for missing required fields (e.g. "amount is required" with camelCase payload already correct):
-        - Use type ADD_DEFAULT ONLY — do NOT suggest FIELD_RENAME when snake_case fields are absent from the request.
-        - defaults.amount MUST be a JSON number greater than 0 (e.g. 99.99), NEVER a string ("0.0") and NEVER zero.
-        - Example: { "type": "ADD_DEFAULT", "defaults": { "amount": 99.99 } }
-        MANDATORY rule type format:
-        - type MUST be exactly ONE value: FIELD_RENAME, ADD_DEFAULT, TYPE_COERCE, or REMOVE_FIELD
-        - NEVER combine types with | or commas; use NESTED_TRANSFORM only if multiple sections are truly needed in one rule.
-        Include only keys relevant to the rule type. Confidence reflects genuine certainty.
-        Never suggest rules that could cause data loss.
+        You are an expert distributed systems engineer specialising in API request contract analysis.
+        The request payload from the source service does not match the target's expected contract.
+        Decide the ONE correct fix and call exactly one propose_* tool.
+        Priority: actual has FEWER fields than receiver → propose_add_default; same count + name mismatch
+        → propose_field_rename; same count + type mismatch → propose_type_coerce. Never cause data loss.
+        If a deterministicFinding with hasConfidentMatch=true is present, fill in that tool's parameters.
         """;
 
     private static final String SYS_RESPONSE = """
         You are an expert distributed systems engineer specialising in API response contract analysis.
-        Service B's RESPONSE body does not match what Service A expects.
-        Analyse using the failure details and registered contracts where provided.
-        Respond ONLY with valid JSON. No markdown, no code blocks, no preamble.
-        {
-          "rootCause": "concise description of the response mismatch",
-          "confidence": 0.XX,
-          "category": "RESPONSE_MISMATCH",
-          "transformationRules": {
-            "type": "RESPONSE_FIELD_RENAME|RESPONSE_ADD_DEFAULT|RESPONSE_TYPE_COERCE|RESPONSE_REMOVE_FIELD|RESPONSE_WRAP|RESPONSE_UNWRAP",
-            "mappings": {}, "defaults": {}, "coercions": {}, "fields": [], "key": ""
-          },
-          "suggestedPermanentFix": "dev team action",
-          "impact": "HIGH|MEDIUM|LOW"
-        }
-        MANDATORY when STRUCTURED RESPONSE DIFF section is present:
-        1. Missing response fields → RESPONSE_ADD_DEFAULT only
-        2. Field name mismatches → RESPONSE_FIELD_RENAME only
-        3. Type mismatches → RESPONSE_TYPE_COERCE only
-        Propose exactly ONE rule for the primary classification; remaining issues are fixed on later retries.
-        For RESPONSE_ADD_DEFAULT, defaults must use JSON numbers (not strings) for numeric fields.
-        For RESPONSE_TYPE_COERCE, coercions values: double, integer, long, string, boolean, decimal.
-        Include only keys relevant to the rule type.
+        The provider's response body does not match what the caller expects.
+        Decide the ONE primary fix and call exactly one propose_response_* tool; remaining issues are
+        fixed on later retries. Missing fields → add_default; name mismatch → field_rename; type mismatch
+        → type_coerce; nesting differences → wrap/unwrap.
         """;
 
     private static final String SYS_ROUTING = """
-        You are an expert SRE specialising in Kubernetes service mesh routing and DNS.
-        A microservice cannot reach its target because the URL is wrong or unreachable.
-        Respond ONLY with valid JSON. No markdown, no code blocks, no preamble.
-        {
-          "rootCause": "concise description",
-          "confidence": 0.XX,
-          "category": "ROUTING",
-          "transformationRules": {
-            "type": "ROUTING_OVERRIDE",
-            "serviceName": "service-that-moved",
-            "originalUrl": "http://old-host:port",
-            "suggestedNewUrl": "http://new-host:port",
-            "discoveryMethod": "REGISTRY_LOOKUP|DNS_PROBE|AI_SUGGESTED"
-          },
-          "suggestedPermanentFix": "update k8s Service / DNS / ConfigMap",
-          "impact": "HIGH"
-        }
-        MANDATORY when SERVICE REGISTRY & DISCOVERY section is present:
-        - MUST set suggestedNewUrl when registry base_url exists and port differs from attempted URL.
-        - MUST NOT set suggestedNewUrl to null when confidence >= 0.7 and registry or DNS probe data exists.
-        - Use host from originalUrl/attempted URL, port from registered base_url (e.g. attempted payment-service:8092 + registry localhost:8091 → http://payment-service:8091).
-        - Prefer DNS probe REACHABLE URLs with discoveryMethod DNS_PROBE.
-        - Use discoveryMethod REGISTRY_LOOKUP when suggestedNewUrl comes from registered base_url.
-        - suggestedNewUrl must be base URL only (scheme + host + port), no path suffix.
-        - Only set suggestedNewUrl to null if no registry/probe data exists AND confidence < 0.7.
+        You are an expert SRE specialising in service routing and DNS.
+        A service is unreachable at the attempted URL. Call propose_routing_override with the correct base URL.
+        Prefer the registry base_url or a REACHABLE DNS probe over guessing ports. suggestedNewUrl is
+        scheme+host+port only, no path. Use the routing context provided; do not invent ports.
         """;
 
     private static final String SYS_CORS = """
-        You are an expert web security engineer specialising in CORS policy and microservices.
-        Mendr edge blocked the request before it reached Service B (Case 1 — edge CORS gate).
-        Respond ONLY with valid JSON. No markdown, no code blocks, no preamble.
-        {
-          "rootCause": "concise description",
-          "confidence": 0.XX,
-          "category": "CORS",
-          "transformationRules": {
-            "type": "CORS_ALLOW",
-            "targetService": "service-b-name",
-            "newOrigin": "http://new-service-a-host:port",
-            "previousOrigin": "http://old-service-a-host:port",
-            "allowedMethods": "GET,POST,PUT,DELETE,PATCH,OPTIONS",
-            "allowedHeaders": "*"
-          },
-          "suggestedPermanentFix": "update CORS config in Service B",
-          "impact": "HIGH"
-        }
-        Only suggest a specific known origin, never wildcard '*'.
+        You are an expert web security engineer specialising in CORS.
+        Mendr's edge blocked the caller before it reached the target (corsBlockedAt=EDGE).
+        Call propose_cors_allow. newOrigin must equal the blocked requestOrigin, never a service base URL,
+        never a wildcard.
         """;
 
     private static final String SYS_CORS_UPSTREAM = """
-        You are an expert web security engineer specialising in CORS policy and microservices.
-        Service B rejected the caller's real Origin AFTER Mendr forwarded the request (Case 2 — upstream CORS).
-        Mendr must rewrite the outbound Origin header only — never change sourceService identity.
-        Respond ONLY with valid JSON. No markdown, no code blocks, no preamble.
-        {
-          "rootCause": "concise description",
-          "confidence": 0.XX,
-          "category": "CORS_UPSTREAM",
-          "transformationRules": {
-            "type": "CORS_ORIGIN_OVERRIDE",
-            "sourceService": "service-a-name",
-            "targetService": "service-b-name",
-            "endpoint": "/api/path",
-            "callerOrigin": "http://real-caller-origin:port",
-            "outboundOrigin": "http://allowed-origin-service-b-accepts:port",
-            "rewriteResponseAcao": true
-          },
-          "suggestedPermanentFix": "Update Service B CORS allowlist to include the new caller URL",
-          "impact": "HIGH"
-        }
-        outboundOrigin must be an origin Service B already allows (from upstreamAllowedOrigins / cors-policy contract).
-        Do NOT suggest CORS_ALLOW — the Mendr edge already passed this request.
-
-        """ + AnalysisPrompts.SYS_CORS_UPSTREAM_NEGATIVE + """
+        You are an expert web security engineer specialising in CORS.
+        The target's OWN CORS filter rejected the real caller origin AFTER Mendr forwarded the request
+        (corsBlockedAt=UPSTREAM). Call propose_cors_origin_override to rewrite the outbound Origin only —
+        never change source identity, never call propose_cors_allow. outboundOrigin must be one of
+        upstreamAllowedOrigins; callerOrigin is the real requestOrigin, never registeredBaseUrl/targetServiceUrl.
         """;
 
     private static final String SYS_UNKNOWN = """
         You are an expert distributed systems engineer.
-        Analyse this API failure and respond ONLY with valid JSON. No markdown.
-        {
-          "rootCause": "description",
-          "confidence": 0.XX,
-          "category": "SCHEMA_MISMATCH|RESPONSE_MISMATCH|ROUTING|CORS|UNKNOWN",
-          "transformationRules": { "type": "UNKNOWN" },
-          "suggestedPermanentFix": "recommendation",
-          "impact": "HIGH|MEDIUM|LOW"
-        }
+        The failure category is uncertain. You may call the read-only context tools (get_contract,
+        get_service_topology, get_active_rules, get_recent_dns_probes, get_similar_past_failures) to gather
+        evidence, then call exactly one propose_* tool with your best fix.
         """;
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -222,257 +115,31 @@ public class AiAnalysisService {
             default                  -> SYS_UNKNOWN;
         };
 
-        String userPrompt  = buildPrompt(ctx);
-        String rawResponse = claudeClient.analyzeFailure(systemPrompt, userPrompt, ctx);
-        AnalysisResult result = parseAndSave(rawResponse, ctx);
+        StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
+        AnalysisToolResult toolResult = claudeClient.analyze(systemPrompt, structured, ctx);
+        AnalysisResult result = harmonizeAndSave(toolResult, ctx);
         publishResult(result, event, ctx);
         return result;
     }
 
-    // ── Prompt builders ───────────────────────────────────────────────────────
+    // ── Harmonize & persist ─────────────────────────────────────────────────────
 
-    private String buildPrompt(FailureAnalysisContext ctx) {
+    /**
+     * Consumes the typed tool result (real or mock), applies the deterministic
+     * safety nets (harmonize / calibrate / enrich / validate), and persists. The
+     * tool path makes the rule TYPE unambiguous, so harmonize/calibrate now act as
+     * a rarely-firing backstop rather than a routine correction.
+     */
+    private AnalysisResult harmonizeAndSave(AnalysisToolResult toolResult, FailureAnalysisContext ctx) {
         ApiFailureEvent event = ctx.event();
-        String category = ctx.category();
-        ContractContext contracts = ctx.contracts();
-        RegistryDiscoveryContext registry = ctx.registry();
 
-        StringBuilder sb = new StringBuilder();
-        sb.append(AnalysisPrompts.FIELD_GLOSSARY);
-        sb.append("=== FAILURE DETAILS ===\n");
-        sb.append("Category      : ").append(category).append("\n");
-        sb.append("Source Service: ").append(event.getServiceA()).append("\n");
-        sb.append("Target Service: ").append(event.getServiceB()).append("\n");
-        sb.append("httpMethod    : ").append(event.getHttpMethod()).append("\n");
-        sb.append("endpointPath  : ").append(event.getEndpoint()).append("\n");
-        sb.append("HTTP Error    : ").append(event.getErrorCode()).append("\n");
-        sb.append("Error Message : ").append(event.getErrorMessage()).append("\n");
-        if (event.getRequestOrigin() != null) {
-            sb.append("requestOrigin : ").append(event.getRequestOrigin()).append("\n");
-        }
-        if (event.getUpstreamOriginSent() != null) {
-            sb.append("upstreamOriginSent: ").append(event.getUpstreamOriginSent()).append("\n");
-        }
-        if (event.getTargetServiceUrl() != null) {
-            sb.append("targetServiceUrl: ").append(event.getTargetServiceUrl()).append("\n");
-        }
-        if (event.getRegisteredBaseUrl() != null) {
-            sb.append("registeredBaseUrl: ").append(event.getRegisteredBaseUrl()).append("\n");
-        }
-        if (event.getDnsProbeDiscoveryUrl() != null) {
-            sb.append("DNS probe found : ").append(event.getDnsProbeDiscoveryUrl()).append(" (reachable at failure time)\n");
-        }
-        if (event.getCorsBlockedAt() != null) {
-            sb.append("corsBlockedAt   : ").append(event.getCorsBlockedAt()).append("\n");
-        }
-        sb.append("\n");
-
-        appendRegistrySection(sb, event, registry);
-        appendActiveRulesSection(sb, ctx.activeRulesOnRoute());
-
-        if (contracts.hasAny()) {
-            sb.append("=== REGISTERED SERVICE CONTRACTS (source of truth) ===\n");
-            if (contracts.senderContract() != null) {
-                sb.append("What ").append(event.getServiceA()).append(" is registered to send (canonical v1.0):\n");
-                appendJson(sb, contracts.senderContract());
-                sb.append("For SCHEMA_MISMATCH, prefer ACTUAL REQUEST SENT below over this registration when they differ.\n");
-            }
-            if (contracts.receiverContract() != null) {
-                sb.append("What ").append(event.getServiceB()).append(" expects to receive:\n");
-                appendJson(sb, contracts.receiverContract());
-            }
-            if (contracts.callerResponseContract() != null) {
-                sb.append("What ").append(event.getServiceA()).append(" expects to receive in the response:\n");
-                appendJson(sb, contracts.callerResponseContract());
-            }
-            if (contracts.providerResponseContract() != null) {
-                sb.append("What ").append(event.getServiceB()).append(" is registered to respond with:\n");
-                appendJson(sb, contracts.providerResponseContract());
-            }
-            sb.append("\n");
-        }
-
-        if ("SCHEMA_MISMATCH".equals(category)) {
-            ctx.schemaDiff().appendToPrompt(sb);
-        }
-        if ("RESPONSE_MISMATCH".equals(category)) {
-            ctx.responseDiff().appendToPrompt(sb);
-        }
-        if ("CORS_UPSTREAM".equals(category)) {
-            ctx.corsUpstreamDiff().appendToPrompt(sb);
-        }
-        if ("CORS".equals(category)) {
-            ctx.corsEdgeDiff().appendToPrompt(sb);
-        }
-
-        switch (category) {
-            case "ROUTING" -> {
-                sb.append("=== ROUTING CONTEXT ===\n");
-                sb.append("Attempted URL : ").append(event.getAttemptedUrl()).append("\n");
-                sb.append("The service at that URL is unreachable.\n");
-                sb.append("Use SERVICE REGISTRY & DISCOVERY above — do not guess ports like 8080 unless probes confirm it.\n");
-            }
-            case "CORS" -> {
-                sb.append("=== CORS CONTEXT (Mendr edge) ===\n");
-                sb.append("Blocked Origin: ").append(event.getRequestOrigin()).append("\n");
-                sb.append("Target Service: ").append(event.getServiceB()).append("\n");
-                appendOriginList(sb, "mendrEdgeAllowedOrigins", ctx.mendrEdgeAllowedOrigins());
-            }
-            case "CORS_UPSTREAM" -> {
-                sb.append("=== UPSTREAM CORS CONTEXT ===\n");
-                sb.append("Blocked real Origin: ").append(event.getRequestOrigin()).append("\n");
-                sb.append("Source Service: ").append(event.getServiceA()).append(" (unchanged — do not spoof)\n");
-                sb.append("Target Service: ").append(event.getServiceB()).append("\n");
-                sb.append("corsBlockedAt: UPSTREAM — request reached Service B; Mendr edge did NOT block.\n");
-                sb.append("IMPORTANT: Failure occurred after upstream was contacted — do NOT suggest CORS_ALLOW.\n");
-                appendOriginList(sb, "upstreamAllowedOrigins", ctx.upstreamAllowedOrigins());
-                if (ctx.corsPolicy().allowedCallerOrigin() != null) {
-                    sb.append("cors-policy allowedCallerOrigin: ").append(ctx.corsPolicy().allowedCallerOrigin()).append("\n");
-                }
-                appendPayload(sb, "ACTUAL REQUEST SENT", event.getRequestPayload());
-                appendPayload(sb, "UPSTREAM RESPONSE SNIPPET", event.getResponsePayload());
-            }
-            default -> {
-                appendPayload(sb, "ACTUAL REQUEST SENT", event.getRequestPayload());
-                appendPayload(sb, "ACTUAL RESPONSE RECEIVED", event.getResponsePayload());
-            }
-        }
-        return sb.toString();
-    }
-
-    private void appendActiveRulesSection(StringBuilder sb, List<ActiveRuleSummary> activeRules) {
-        if (activeRules == null || activeRules.isEmpty()) return;
-        sb.append("=== ACTIVE RULES ON THIS ROUTE ===\n");
-        for (ActiveRuleSummary rule : activeRules) {
-            sb.append("  - [").append(rule.scope()).append("] ")
-              .append(rule.ruleType()).append(": ").append(rule.summary()).append("\n");
-        }
-        sb.append("\n");
-    }
-
-    private void appendOriginList(StringBuilder sb, String label, List<String> origins) {
-        if (origins == null || origins.isEmpty()) return;
-        sb.append(label).append(": ");
-        appendJson(sb, origins);
-    }
-
-    private void appendRegistrySection(StringBuilder sb, ApiFailureEvent event, RegistryDiscoveryContext registry) {
-        if (!registry.hasAny() && registry.allActiveServices().isEmpty()) return;
-
-        sb.append("=== SERVICE REGISTRY & DISCOVERY (authoritative — prefer over guessing) ===\n");
-
-        if (!registry.involvedServices().isEmpty()) {
-            sb.append("Registered endpoints for involved services:\n");
-            for (Map<String, Object> svc : registry.involvedServices()) {
-                sb.append("  - ").append(svc.get("name"))
-                  .append(" → ").append(svc.get("base_url"));
-                if (svc.get("last_health_status") != null) {
-                    sb.append(" [health: ").append(svc.get("last_health_status")).append("]");
-                }
-                if (svc.get("namespace") != null) {
-                    sb.append(" (ns: ").append(svc.get("namespace")).append(")");
-                }
-                sb.append("\n");
-            }
-        }
-
-        if (!registry.activeRoutingRules().isEmpty()) {
-            sb.append("Active routing overrides:\n");
-            for (Map<String, Object> rule : registry.activeRoutingRules()) {
-                sb.append("  - ").append(rule.get("service_name"))
-                  .append(": ").append(rule.get("original_url"))
-                  .append(" → ").append(rule.get("new_url"))
-                  .append(" (via ").append(rule.get("discovery_method")).append(")\n");
-            }
-        }
-
-        if (!registry.recentDnsProbes().isEmpty()) {
-            sb.append("Recent DNS/health probes (newest first):\n");
-            for (Map<String, Object> probe : registry.recentDnsProbes()) {
-                sb.append("  - ").append(probe.get("probed_url"));
-                sb.append(probe.get("reachable") == Boolean.TRUE ? " ✓ REACHABLE" : " ✗ unreachable");
-                if (probe.get("http_status") != null) {
-                    sb.append(" HTTP ").append(probe.get("http_status"));
-                }
-                sb.append("\n");
-            }
-        }
-
-        if (!registry.allActiveServices().isEmpty()) {
-            sb.append("All active services in Mendr registry:\n");
-            for (Map<String, Object> svc : registry.allActiveServices()) {
-                sb.append("  - ").append(svc.get("name"))
-                  .append(" → ").append(svc.get("base_url"));
-                if (svc.get("last_health_status") != null) {
-                    sb.append(" [").append(svc.get("last_health_status")).append("]");
-                }
-                sb.append("\n");
-            }
-        }
-
-        if (event.getRegisteredBaseUrl() != null && event.getAttemptedUrl() != null) {
-            sb.append("Hint: registered base for ").append(event.getServiceB())
-              .append(" is ").append(event.getRegisteredBaseUrl())
-              .append(" but gateway attempted ").append(event.getAttemptedUrl()).append("\n");
-        }
-        sb.append("\n");
-    }
-
-    private void appendJson(StringBuilder sb, Object obj) {
-        try { sb.append(objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(obj)).append("\n"); }
-        catch (Exception e) { sb.append(obj).append("\n"); }
-    }
-
-    private void appendPayload(StringBuilder sb, String label, Map<String, Object> payload) {
-        if (payload != null && !payload.isEmpty()) {
-            sb.append("=== ").append(label).append(" ===\n");
-            appendJson(sb, payload);
-            sb.append("\n");
-        }
-    }
-
-    // ── Parse & persist ───────────────────────────────────────────────────────
-
-    private AnalysisResult parseAndSave(String rawResponse, FailureAnalysisContext ctx) {
-        ApiFailureEvent event = ctx.event();
-        Map<String, Object> transformationRules = new HashMap<>();
-        String rootCause    = "Unable to determine root cause";
-        double confidence   = 0.0;
-        double modelConfidence = 0.0;
-        String permanentFix = "Manual investigation required";
-        boolean rulesParseFailed = false;
-
-        try {
-            String cleaned = rawResponse.trim()
-                    .replaceAll("(?s)```json\\s*", "")
-                    .replaceAll("(?s)```\\s*", "")
-                    .trim();
-            JsonNode json   = objectMapper.readTree(cleaned);
-            rootCause       = json.path("rootCause").asText(rootCause);
-            modelConfidence = json.path("confidence").asDouble(0.0);
-            confidence      = modelConfidence;
-            permanentFix    = json.path("suggestedPermanentFix").asText(permanentFix);
-
-            if (json.has("transformationRules") && !json.get("transformationRules").isNull()) {
-                try {
-                    transformationRules = TransformationRulesParser.parse(
-                            json.get("transformationRules"), objectMapper);
-                } catch (Exception rulesEx) {
-                    rulesParseFailed = true;
-                    log.warn("Could not normalize transformationRules for {}: {} — keeping rootCause/confidence",
-                            event.getFailureId(), rulesEx.getMessage());
-                }
-            }
-        } catch (Exception e) {
-            log.error("Failed to parse AI response for {}: {}", event.getFailureId(), e.getMessage());
-            rootCause  = "AI analysis produced an unparseable response. Manual review required.";
-            confidence = 0.0;
-            modelConfidence = 0.0;
-        }
-
-        if (rulesParseFailed && transformationRules.isEmpty()) {
-            confidence = Math.min(confidence, confidenceThreshold - 0.01);
-        }
+        Map<String, Object> transformationRules = toolResult.transformationRules() != null
+                ? new LinkedHashMap<>(toolResult.transformationRules())
+                : new LinkedHashMap<>();
+        String rootCause = toolResult.rootCause();
+        String permanentFix = toolResult.suggestedPermanentFix();
+        double modelConfidence = toolResult.confidence();
+        double confidence = modelConfidence;
 
         transformationRules = harmonizeWithSchemaDiff(transformationRules, ctx.schemaDiff(), event.getFailureId());
         transformationRules = harmonizeWithResponseDiff(transformationRules, ctx.responseDiff(), event.getFailureId());
@@ -499,7 +166,9 @@ public class AiAnalysisService {
                     event.getFailureId());
         }
 
-        attachAnalysisMetadata(transformationRules, ctx, validation.reason());
+        AnalysisResult.AnalysisSource source = toolResult.source() == AnalysisToolResult.Source.MOCK
+                ? AnalysisResult.AnalysisSource.MOCK
+                : AnalysisResult.AnalysisSource.CLAUDE;
 
         AnalysisResult result = AnalysisResult.builder()
                 .failureId(event.getFailureId())
@@ -507,7 +176,9 @@ public class AiAnalysisService {
                 .confidence(confidence)
                 .transformationRules(transformationRules)
                 .suggestedPermanentFix(permanentFix)
-                .aiModel("claude-haiku-4-5-20251001")
+                .aiModel(toolResult.model())
+                .analysisSource(source)
+                .analysisMetadata(buildAnalysisMetadata(ctx, validation.reason()))
                 .status(confidence >= confidenceThreshold && !validationFailed && !routingUndeployable
                         ? AnalysisResult.AnalysisStatus.PENDING_APPROVAL
                         : AnalysisResult.AnalysisStatus.REJECTED)
@@ -515,16 +186,18 @@ public class AiAnalysisService {
         return analysisRepository.save(result);
     }
 
-    private void attachAnalysisMetadata(
-            Map<String, Object> rules, FailureAnalysisContext ctx, String validationReason) {
-        if (rules == null) return;
+    /**
+     * Audit-only metadata kept OFF the deployed {@code transformationRules} map so
+     * it never travels into a compiled route snapshot. Lives on its own column.
+     */
+    private Map<String, Object> buildAnalysisMetadata(FailureAnalysisContext ctx, String validationReason) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("upstreamAllowedOrigins", ctx.upstreamAllowedOrigins());
         meta.put("mendrEdgeAllowedOrigins", ctx.mendrEdgeAllowedOrigins());
         if (validationReason != null) {
             meta.put("validationReason", validationReason);
         }
-        rules.put("_analysisMetadata", meta);
+        return meta;
     }
 
     private double calibrateConfidence(
@@ -698,12 +371,17 @@ public class AiAnalysisService {
             case "ADD_DEFAULT" -> isEmptyMap(rules.get("defaults"));
             case "FIELD_RENAME" -> isEmptyMap(rules.get("mappings"));
             case "TYPE_COERCE" -> isEmptyMap(rules.get("coercions"));
+            case "FIELD_MOVE", "RESPONSE_FIELD_MOVE" -> isEmptyList(rules.get("moves"));
             default -> false;
         };
     }
 
     private static boolean isEmptyMap(Object value) {
         return !(value instanceof Map<?, ?> map) || map.isEmpty();
+    }
+
+    private static boolean isEmptyList(Object value) {
+        return !(value instanceof List<?> list) || list.isEmpty();
     }
 
     private static String str(Object o) {

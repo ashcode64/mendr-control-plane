@@ -15,17 +15,40 @@ public record SchemaDiffResult(
         Map<String, String> renameMappings,
         Map<String, String> typeCoercions,
         Map<String, Object> suggestedDefaults,
+        List<Map<String, Object>> moves,
         boolean deterministic
 ) {
     public enum Kind {
         MISSING_FIELD,
         FIELD_RENAME,
         TYPE_MISMATCH,
+        FIELD_MOVE,
         NONE
     }
 
     public static SchemaDiffResult empty() {
-        return new SchemaDiffResult(Kind.NONE, "", Set.of(), Map.of(), Map.of(), Map.of(), false);
+        return new SchemaDiffResult(Kind.NONE, "", Set.of(), Map.of(), Map.of(), Map.of(), List.of(), false);
+    }
+
+    public static SchemaDiffResult missing(String summary, Set<String> missingFields,
+                                           Map<String, Object> defaults) {
+        return new SchemaDiffResult(Kind.MISSING_FIELD, summary, missingFields,
+                Map.of(), Map.of(), defaults, List.of(), !defaults.isEmpty());
+    }
+
+    public static SchemaDiffResult rename(String summary, Map<String, String> renameMappings) {
+        return new SchemaDiffResult(Kind.FIELD_RENAME, summary, Set.of(),
+                renameMappings, Map.of(), Map.of(), List.of(), true);
+    }
+
+    public static SchemaDiffResult typeMismatch(String summary, Map<String, String> coercions) {
+        return new SchemaDiffResult(Kind.TYPE_MISMATCH, summary, Set.of(),
+                Map.of(), coercions, Map.of(), List.of(), true);
+    }
+
+    public static SchemaDiffResult move(String summary, List<Map<String, Object>> moves) {
+        return new SchemaDiffResult(Kind.FIELD_MOVE, summary, Set.of(),
+                Map.of(), Map.of(), Map.of(), moves, true);
     }
 
     public boolean hasDeterministicRule() {
@@ -33,6 +56,7 @@ public record SchemaDiffResult(
         if (kind == Kind.MISSING_FIELD && suggestedDefaults.isEmpty()) return false;
         if (kind == Kind.FIELD_RENAME && renameMappings.isEmpty()) return false;
         if (kind == Kind.TYPE_MISMATCH && typeCoercions.isEmpty()) return false;
+        if (kind == Kind.FIELD_MOVE && (moves == null || moves.isEmpty())) return false;
         return true;
     }
 
@@ -51,6 +75,10 @@ public record SchemaDiffResult(
             case TYPE_MISMATCH -> {
                 rules.put("type", "TYPE_COERCE");
                 rules.put("coercions", new LinkedHashMap<>(typeCoercions));
+            }
+            case FIELD_MOVE -> {
+                rules.put("type", "FIELD_MOVE");
+                rules.put("moves", moves == null ? List.of() : List.copyOf(moves));
             }
             default -> { }
         }

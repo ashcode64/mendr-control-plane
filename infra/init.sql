@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS transformation_rules (
     service_a VARCHAR(255) NOT NULL,
     service_b VARCHAR(255) NOT NULL,
     endpoint VARCHAR(512) NOT NULL,
-    rule_type VARCHAR(50),               -- FIELD_RENAME, TYPE_COERCE, ADD_DEFAULT, REMOVE_FIELD
+    rule_type VARCHAR(50),               -- FIELD_RENAME, TYPE_COERCE, ADD_DEFAULT, REMOVE_FIELD, FIELD_MOVE
     rule_definition JSONB NOT NULL,
     description TEXT,
     approved_by VARCHAR(255),
@@ -284,7 +284,7 @@ CREATE TABLE IF NOT EXISTS response_transformation_rules (
     service_a    VARCHAR(255) NOT NULL,   -- the caller (who will receive the response)
     service_b    VARCHAR(255) NOT NULL,   -- the responder
     endpoint     VARCHAR(512) NOT NULL,
-    rule_type    VARCHAR(50),             -- RESPONSE_FIELD_RENAME | RESPONSE_TYPE_COERCE
+    rule_type    VARCHAR(50),             -- RESPONSE_FIELD_RENAME | RESPONSE_TYPE_COERCE | RESPONSE_FIELD_MOVE | ...
                                           -- RESPONSE_ADD_DEFAULT  | RESPONSE_REMOVE_FIELD
                                           -- RESPONSE_WRAP | RESPONSE_UNWRAP
     rule_definition JSONB NOT NULL,
@@ -331,3 +331,18 @@ CREATE TABLE IF NOT EXISTS k8s_health_cache (
 );
 
 CREATE INDEX idx_k8s_health_service ON k8s_health_cache(service_name, checked_at DESC);
+
+-- ─── Migration V3: AI analysis provenance + audit metadata ─────────────────
+-- analysis_source distinguishes a real Claude analysis from the mock fallback.
+-- analysis_metadata holds audit-only data (allowlists, validation reason) that
+-- must stay OFF the deployed transformation_rules map / route snapshot.
+ALTER TABLE analysis_results
+    ADD COLUMN IF NOT EXISTS analysis_source   VARCHAR(20),
+    ADD COLUMN IF NOT EXISTS analysis_metadata JSONB;
+
+-- ─── Migration V4: inferred contract schema ────────────────────────────────
+-- Derived at manifest import from one or more example payloads. Expresses
+-- required/optional/types/enums so analyzers can diff against constraints, not
+-- just a single instance.
+ALTER TABLE service_contracts
+    ADD COLUMN IF NOT EXISTS inferred_schema JSONB;

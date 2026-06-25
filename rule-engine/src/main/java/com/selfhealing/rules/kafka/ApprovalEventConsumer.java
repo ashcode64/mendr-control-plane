@@ -74,6 +74,7 @@ public class ApprovalEventConsumer {
                      "RESPONSE_TYPE_COERCE",
                      "RESPONSE_ADD_DEFAULT",
                      "RESPONSE_REMOVE_FIELD",
+                     "RESPONSE_FIELD_MOVE",
                      "RESPONSE_WRAP",
                      "RESPONSE_UNWRAP"        -> deployResponseTransformationRule(rules, ruleType, analysisIdStr, failureIdStr, actedBy);
                 default                       -> deployTransformationRule(rules, ruleType, analysisIdStr, failureIdStr, actedBy);

@@ -5,6 +5,7 @@ import com.selfhealing.gateway.model.TransformationRule;
 import com.selfhealing.gateway.util.DefaultValueNormalizer;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -31,6 +32,7 @@ public class TransformProgramCompiler {
             putDefaults(acc, def.get("defaults"));
             putCoercions(acc, def.get("coercions"));
             putRemovals(acc, def.get("fields"));
+            putMoves(acc, def.get("moves"));
         }
         return acc.build();
     }
@@ -50,6 +52,7 @@ public class TransformProgramCompiler {
                 case RESPONSE_ADD_DEFAULT -> putDefaults(acc, def.get("defaults"));
                 case RESPONSE_TYPE_COERCE -> putCoercions(acc, def.get("coercions"));
                 case RESPONSE_REMOVE_FIELD -> putRemovals(acc, def.get("fields"));
+                case RESPONSE_FIELD_MOVE -> putMoves(acc, def.get("moves"));
                 case RESPONSE_WRAP -> {
                     acc.wrapKey = str(def.getOrDefault("key", "data"));
                     acc.streamable = false;
@@ -107,6 +110,33 @@ public class TransformProgramCompiler {
         }
     }
 
+    @SuppressWarnings("unchecked")
+    private void putMoves(Acc acc, Object o) {
+        if (!(o instanceof List<?> list)) {
+            return;
+        }
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> m)) {
+                continue;
+            }
+            Object from = m.get("from");
+            Object to = m.get("to");
+            if (from == null || to == null) {
+                continue;
+            }
+            Map<String, Object> move = new HashMap<>();
+            move.put("from", from.toString());
+            move.put("to", to.toString());
+            Object copy = m.get("copy");
+            move.put("copy", copy instanceof Boolean b ? b : Boolean.parseBoolean(String.valueOf(copy)));
+            acc.moves.add(move);
+        }
+        if (!acc.moves.isEmpty()) {
+            // Restructure across nesting => not safe for the flat streaming path.
+            acc.streamable = false;
+        }
+    }
+
     private static String str(Object o) {
         return o != null ? o.toString() : "data";
     }
@@ -117,6 +147,7 @@ public class TransformProgramCompiler {
         final Map<String, Object> defaults = new HashMap<>();
         final Map<String, String> coercions = new HashMap<>();
         final Set<String> removals = new HashSet<>();
+        final List<Map<String, Object>> moves = new ArrayList<>();
         String wrapKey;
         String unwrapKey;
 
@@ -124,6 +155,7 @@ public class TransformProgramCompiler {
             detectRenameCollisions();
             boolean empty = renames.isEmpty() && defaults.isEmpty()
                     && coercions.isEmpty() && removals.isEmpty()
+                    && moves.isEmpty()
                     && wrapKey == null && unwrapKey == null;
             return TransformProgram.builder()
                     .empty(empty)
@@ -132,6 +164,7 @@ public class TransformProgramCompiler {
                     .defaults(Map.copyOf(defaults))
                     .coercions(Map.copyOf(coercions))
                     .removals(Set.copyOf(removals))
+                    .moves(List.copyOf(moves))
                     .wrapKey(wrapKey)
                     .unwrapKey(unwrapKey)
                     .build();

@@ -74,6 +74,7 @@ public class ResponseTransformationRule {
         RESPONSE_TYPE_COERCE,
         RESPONSE_ADD_DEFAULT,
         RESPONSE_REMOVE_FIELD,
+        RESPONSE_FIELD_MOVE,    // relocate a response field across nesting levels
         RESPONSE_WRAP,      // wrap response body under a key
         RESPONSE_UNWRAP     // unwrap a nested object to top-level
     }

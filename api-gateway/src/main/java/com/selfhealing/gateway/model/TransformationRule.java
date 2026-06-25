@@ -83,6 +83,7 @@ public class TransformationRule {
         TYPE_COERCE,
         ADD_DEFAULT,
         REMOVE_FIELD,
+        FIELD_MOVE,
         NESTED_TRANSFORM
     }
 }

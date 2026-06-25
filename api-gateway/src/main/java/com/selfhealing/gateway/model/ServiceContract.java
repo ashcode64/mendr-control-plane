@@ -34,6 +34,15 @@ public class ServiceContract {
     @Column(name = "example_payload", columnDefinition = "jsonb")
     private Map<String, Object> examplePayload;
 
+    /**
+     * Lightweight inferred schema (required/optional/types/enums/array-shape) derived
+     * from one or more example payloads at import time. Lets deterministic analyzers
+     * tell required from optional instead of "differs from the one example".
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "inferred_schema", columnDefinition = "jsonb")
+    private Map<String, Object> inferredSchema;
+
     private String description;
     private String version;
 

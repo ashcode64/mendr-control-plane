@@ -3,6 +3,7 @@ package com.selfhealing.gateway.transform;
 import lombok.Builder;
 import lombok.Value;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -19,6 +20,12 @@ public class TransformProgram {
     Set<String> removals;
     String wrapKey;
     String unwrapKey;
+    /**
+     * Field restructure ops (FIELD_MOVE). Each entry is {from, to, copy?} with
+     * JSON-Pointer paths, relocating a value across nesting levels. Applied before
+     * the flat ops at the edge.
+     */
+    List<Map<String, Object>> moves;
 
     public static TransformProgram none() {
         return TransformProgram.builder()
@@ -28,6 +35,7 @@ public class TransformProgram {
                 .defaults(Map.of())
                 .coercions(Map.of())
                 .removals(Set.of())
+                .moves(List.of())
                 .build();
     }
 }
