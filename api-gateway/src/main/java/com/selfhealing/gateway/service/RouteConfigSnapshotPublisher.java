@@ -44,6 +44,7 @@ public class RouteConfigSnapshotPublisher {
     static final String SYNC_VERSION_KEY = "mendr:routeconfig:sync-version";
 
     private final RouteConfigService routeConfigService;
+    private final RouteProgramService routeProgramService;
     private final InterServiceRouteDiscovery routeDiscovery;
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
@@ -112,23 +113,30 @@ public class RouteConfigSnapshotPublisher {
     public RouteConfigSyncPayload buildFullSyncPayload() {
         Map<String, String> routes = new LinkedHashMap<>();
         Set<String> currentKeys = new HashSet<>();
+        // Routes whose source still exists but whose snapshot build failed this run.
+        // These must NOT be treated as "removed" — a transient build error must
+        // never evict a route the edge is actively healing.
+        Set<String> failedKeys = new HashSet<>();
 
         for (RouteTriple triple : routeDiscovery.discoverAll()) {
+            String key = redisKey(triple.source(), triple.target(), triple.endpoint());
             try {
                 RouteConfig config = routeConfigService.get(
                         triple.source(), triple.target(), triple.endpoint());
                 RouteConfigSnapshot snapshot = toSnapshot(config);
+                overlayMaterializedProgram(snapshot, triple.source(), triple.target(), triple.endpoint());
                 snapshot.setSyncValidation(isSyncValidationRoute(
                         triple.source(), triple.target(), triple.endpoint()));
                 applyDockerHostRewrite(snapshot);
 
-                String key = redisKey(triple.source(), triple.target(), triple.endpoint());
                 routes.put(key, objectMapper.writeValueAsString(snapshot));
                 currentKeys.add(key);
             } catch (JsonProcessingException e) {
+                failedKeys.add(key);
                 log.warn("Failed to serialize sync snapshot for {}:{}:{} — {}",
                         triple.source(), triple.target(), triple.endpoint(), e.getMessage());
             } catch (Exception e) {
+                failedKeys.add(key);
                 log.warn("Failed to build sync snapshot for {}:{}:{} — {}",
                         triple.source(), triple.target(), triple.endpoint(), e.getMessage());
             }
@@ -137,12 +145,17 @@ public class RouteConfigSnapshotPublisher {
         List<String> removed = new ArrayList<>();
         synchronized (pendingSyncLock) {
             for (String key : knownRouteKeys) {
-                if (!currentKeys.contains(key)) {
+                // Only remove a key when the route is genuinely gone from discovery —
+                // never merely because this run failed to (re)build its snapshot.
+                if (!currentKeys.contains(key) && !failedKeys.contains(key)) {
                     removed.add(key);
                 }
             }
+            // Keep previously-known keys whose build failed this run so they are
+            // re-evaluated (and not silently dropped) on the next sync.
             knownRouteKeys.clear();
             knownRouteKeys.addAll(currentKeys);
+            knownRouteKeys.addAll(failedKeys);
         }
 
         return RouteConfigSyncPayload.builder()
@@ -163,9 +176,23 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public void publishRoute(String sourceService, String targetService, String endpoint) {
+        // Recompile the materialized program first so the snapshot reflects the
+        // current rule set atomically. If recompile fails its integrity guard
+        // (empty program while active rules exist), DO NOT publish — leave the
+        // last good snapshot in place rather than blanking a healed route.
+        try {
+            routeProgramService.recompileRoute(sourceService, targetService, endpoint, "route-changed");
+        } catch (RouteProgramService.RouteProgramIntegrityException e) {
+            log.error("Skipping publish for {}:{}:{} — {}", sourceService, targetService, endpoint, e.getMessage());
+            return;
+        } catch (Exception e) {
+            log.warn("Recompile failed for {}:{}:{} ({}). Publishing from assembled config.",
+                    sourceService, targetService, endpoint, e.getMessage());
+        }
         try {
             RouteConfig config = routeConfigService.get(sourceService, targetService, endpoint);
             RouteConfigSnapshot snapshot = toSnapshot(config);
+            overlayMaterializedProgram(snapshot, sourceService, targetService, endpoint);
             snapshot.setSyncValidation(isSyncValidationRoute(sourceService, targetService, endpoint));
             applyDockerHostRewrite(snapshot);
 
@@ -246,6 +273,31 @@ public class RouteConfigSnapshotPublisher {
 
     public static String redisKey(String sourceService, String targetService, String endpoint) {
         return REDIS_KEY_PREFIX + sourceService + ":" + targetService + ":" + endpoint;
+    }
+
+    /**
+     * Overlay the durable, materialized merged program onto the snapshot when one
+     * exists. The assembled config still provides base URL / auth / CORS, but the
+     * transform programs come from the materialized {@code route_program} row so a
+     * transient per-publish compile can never blank a route that has approved rules.
+     */
+    private void overlayMaterializedProgram(RouteConfigSnapshot snapshot,
+                                            String source, String target, String endpoint) {
+        routeProgramService.find(source, target, endpoint).ifPresent(rp -> {
+            try {
+                if (rp.getRequestProgram() != null) {
+                    snapshot.setRequestProgram(objectMapper.convertValue(
+                            rp.getRequestProgram(), RouteConfigSnapshot.TransformProgramSnapshot.class));
+                }
+                if (rp.getResponseProgram() != null) {
+                    snapshot.setResponseProgram(objectMapper.convertValue(
+                            rp.getResponseProgram(), RouteConfigSnapshot.TransformProgramSnapshot.class));
+                }
+            } catch (Exception e) {
+                log.warn("Failed to overlay materialized program for {}:{}:{} — {}",
+                        source, target, endpoint, e.getMessage());
+            }
+        });
     }
 
     static RouteConfigSnapshot toSnapshot(RouteConfig config) {

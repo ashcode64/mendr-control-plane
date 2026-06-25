@@ -302,6 +302,57 @@ CREATE INDEX idx_resp_rules_pair    ON response_transformation_rules(service_a, 
 CREATE INDEX idx_resp_rules_active  ON response_transformation_rules(is_active);
 CREATE INDEX idx_resp_rules_expires ON response_transformation_rules(expires_at);
 
+-- ─── Materialized Route Program (durable merged program per route) ─────────
+-- One authoritative, versioned row per (source, target, endpoint). It is the
+-- merged result of ALL currently-active request + response transformation rules
+-- for the route, recompiled transactionally whenever the rule set changes
+-- (approve / reject / expire). The snapshot publisher reads THIS instead of
+-- recompiling on every publish, so a transient read/compile hiccup can never
+-- silently blank a route that still has approved rules.
+--   request_program / response_program : the merged TransformProgram (snapshot JSON)
+--   request_rule_ids / response_rule_ids : provenance — exactly which rules built it
+--   version          : monotonic per route; bumped only when the program changes
+--   program_hash     : sha256 of the canonical merged program; idempotent publishes
+CREATE TABLE IF NOT EXISTS route_program (
+    source_service     VARCHAR(255) NOT NULL,
+    target_service     VARCHAR(255) NOT NULL,
+    endpoint           VARCHAR(512) NOT NULL,
+
+    request_program    JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    response_program   JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    request_rule_ids   UUID[]       NOT NULL DEFAULT '{}',
+    response_rule_ids  UUID[]       NOT NULL DEFAULT '{}',
+    rule_count         INTEGER      NOT NULL DEFAULT 0,
+
+    program_hash       VARCHAR(64)  NOT NULL,
+    version            BIGINT       NOT NULL DEFAULT 1,
+    compiled_by        VARCHAR(255),
+    compiled_at        TIMESTAMP    NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (source_service, target_service, endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_program_version ON route_program(version);
+
+-- Append-only history for rollback / audit of the materialized program.
+CREATE TABLE IF NOT EXISTS route_program_history (
+    id                 UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_service     VARCHAR(255) NOT NULL,
+    target_service     VARCHAR(255) NOT NULL,
+    endpoint           VARCHAR(512) NOT NULL,
+    request_program    JSONB        NOT NULL,
+    response_program   JSONB        NOT NULL,
+    request_rule_ids   UUID[]       NOT NULL,
+    response_rule_ids  UUID[]       NOT NULL,
+    program_hash       VARCHAR(64)  NOT NULL,
+    version            BIGINT       NOT NULL,
+    compiled_by        VARCHAR(255),
+    compiled_at        TIMESTAMP    NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_program_history_route
+    ON route_program_history(source_service, target_service, endpoint, version DESC);
+
 -- ─── Auth Secrets (references only — actual secrets stay in k8s/env) ──────
 -- Stores which env var / k8s secret holds the credential for each service.
 -- The gateway resolves the actual value at runtime from env, never stored here.
