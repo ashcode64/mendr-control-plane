@@ -126,9 +126,10 @@ public class DynamicRoutingService {
 
         // Audit
         jdbcTemplate.update("""
-            INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-            VALUES ('ROUTING_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
+            INSERT INTO audit_log (tenant_id, entity_type, entity_id, action, actor, details)
+            VALUES (?, 'ROUTING_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
             """,
+            com.selfhealing.gateway.tenant.TenantContext.currentOrDefault(),
             rule.getId().toString(), approvedBy,
             String.format("{\"service\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"ttlHours\":%d}",
                 serviceName, originalUrl, newUrl, ttlHours));

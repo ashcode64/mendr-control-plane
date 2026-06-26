@@ -132,11 +132,11 @@ public class ApprovalEventConsumer {
 
         jdbcTemplate.update("""
             INSERT INTO routing_rules
-                (id, service_name, original_url, new_url, discovery_method,
+                (id, tenant_id, service_name, original_url, new_url, discovery_method,
                  failure_id, analysis_id, approved_by, approved_at, is_active, expires_at)
-            VALUES (?::uuid, ?, ?, ?, ?, ?::uuid, ?::uuid, ?, NOW(), true, ?)
+            VALUES (?::uuid, ?, ?, ?, ?, ?, ?::uuid, ?::uuid, ?, NOW(), true, ?)
             """,
-            ruleId, serviceName, originalUrl, newUrl, discoveryMethod,
+            ruleId, tenantId(), serviceName, originalUrl, newUrl, discoveryMethod,
             failureId, analysisId, actedBy, expiresAt);
 
         // Update services registry
@@ -184,11 +184,11 @@ public class ApprovalEventConsumer {
 
         jdbcTemplate.update("""
             INSERT INTO cors_rules
-                (id, target_service, allowed_origin, previous_origin, failure_id, analysis_id,
+                (id, tenant_id, target_service, allowed_origin, previous_origin, failure_id, analysis_id,
                  allowed_methods, allowed_headers, approved_by, approved_at, is_active, expires_at)
-            VALUES (?::uuid, ?, ?, ?, ?::uuid, ?::uuid, ?, ?, ?, NOW(), true, ?)
+            VALUES (?::uuid, ?, ?, ?, ?, ?::uuid, ?::uuid, ?, ?, ?, NOW(), true, ?)
             """,
-            ruleId, targetService, newOrigin, previousOrigin,
+            ruleId, tenantId(), targetService, newOrigin, previousOrigin,
             failureId, analysisId, allowedMethods, allowedHeaders, actedBy, expiresAt);
 
         // Warm Redis
@@ -266,11 +266,11 @@ public class ApprovalEventConsumer {
 
         jdbcTemplate.update("""
             INSERT INTO origin_override_rules
-                (id, source_service, target_service, endpoint, caller_origin, outbound_origin,
+                (id, tenant_id, source_service, target_service, endpoint, caller_origin, outbound_origin,
                  rewrite_response_acao, failure_id, analysis_id, approved_by, approved_at, is_active, expires_at)
-            VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?::uuid, ?::uuid, ?, NOW(), true, ?)
+            VALUES (?::uuid, ?, ?, ?, ?, ?, ?, ?, ?::uuid, ?::uuid, ?, NOW(), true, ?)
             """,
-            ruleId, sourceService, targetService, endpoint, callerOrigin, outboundOrigin,
+            ruleId, tenantId(), sourceService, targetService, endpoint, callerOrigin, outboundOrigin,
             rewriteResponseAcao, failureId, analysisId, actedBy, expiresAt);
 
         jdbcTemplate.update("UPDATE api_failures SET status = 'RESOLVED' WHERE id = ?::uuid", failureId);
@@ -352,11 +352,11 @@ public class ApprovalEventConsumer {
 
         jdbcTemplate.update("""
             INSERT INTO response_transformation_rules
-                (id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
+                (id, tenant_id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
                  description, approved_by, approved_at, expires_at, is_active, version)
-            VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?::jsonb, ?, ?, NOW(), ?, true, 1)
+            VALUES (?::uuid, ?, ?::uuid, ?, ?, ?, ?, ?::jsonb, ?, ?, NOW(), ?, true, 1)
             """,
-            ruleId, analysisId, serviceA, serviceB, endpoint,
+            ruleId, tenantId(), analysisId, serviceA, serviceB, endpoint,
             ruleType, rulesJson,
             "AI-generated " + ruleType + " response rule approved by " + actedBy,
             actedBy, expiresAt);
@@ -395,11 +395,11 @@ public class ApprovalEventConsumer {
         String ruleId = UUID.randomUUID().toString();
         jdbcTemplate.update("""
             INSERT INTO transformation_rules
-                (id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
+                (id, tenant_id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
                  description, approved_by, approved_at, expires_at, is_active, version)
-            VALUES (?::uuid, ?::uuid, ?, ?, ?, ?, ?::jsonb, ?, ?, NOW(), ?, true, 1)
+            VALUES (?::uuid, ?, ?::uuid, ?, ?, ?, ?, ?::jsonb, ?, ?, NOW(), ?, true, 1)
             """,
-            ruleId, analysisId, serviceA, serviceB, endpoint,
+            ruleId, tenantId(), analysisId, serviceA, serviceB, endpoint,
             ruleType, rulesJson,
             "AI-generated " + ruleType + " rule approved by " + actedBy,
             actedBy, expiresAt);
@@ -424,12 +424,17 @@ public class ApprovalEventConsumer {
     private void audit(String entityId, String entityType, String action, String actor, String detailsJson) {
         try {
             jdbcTemplate.update("""
-                INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-                VALUES (?, ?::uuid, ?, ?, ?::jsonb)
-                """, entityType, entityId, action, actor, detailsJson);
+                INSERT INTO audit_log (tenant_id, entity_type, entity_id, action, actor, details)
+                VALUES (?, ?, ?::uuid, ?, ?, ?::jsonb)
+                """, tenantId(), entityType, entityId, action, actor, detailsJson);
         } catch (Exception e) {
             log.debug("Audit log write failed: {}", e.getMessage());
         }
+    }
+
+    /** Tenant for write paths: the Kafka-bound tenant, or the default tenant. */
+    private static java.util.UUID tenantId() {
+        return com.selfhealing.rules.tenant.TenantContext.currentOrDefault();
     }
 
     private String loadRegisteredBaseUrl(String serviceName) {

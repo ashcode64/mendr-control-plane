@@ -1,5 +1,6 @@
 package com.selfhealing.gateway.model;
 
+import com.selfhealing.gateway.tenant.TenantScoped;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.JdbcTypeCode;
@@ -11,12 +12,16 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "service_contracts")
+@EntityListeners(com.selfhealing.gateway.tenant.TenantEntityListener.class)
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
-public class ServiceContract {
+public class ServiceContract implements TenantScoped {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
+
+    @Column(name = "tenant_id")
+    private UUID tenantId;
 
     @Column(name = "service_name", nullable = false)
     private String serviceName;

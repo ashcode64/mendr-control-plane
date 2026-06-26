@@ -123,9 +123,10 @@ public class DynamicCorsService {
 
         // Audit
         jdbcTemplate.update("""
-            INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-            VALUES ('CORS_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
+            INSERT INTO audit_log (tenant_id, entity_type, entity_id, action, actor, details)
+            VALUES (?, 'CORS_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
             """,
+            com.selfhealing.gateway.tenant.TenantContext.currentOrDefault(),
             rule.getId().toString(), approvedBy,
             String.format("{\"targetService\":\"%s\",\"origin\":\"%s\",\"ttlHours\":%d}",
                 targetService, newOrigin, ttlHours));
