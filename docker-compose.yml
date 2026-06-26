@@ -93,8 +93,8 @@ services:
       - "8082:8082"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
     depends_on:
@@ -110,8 +110,8 @@ services:
       - "8083:8083"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
       postgres:
@@ -126,8 +126,8 @@ services:
       - "8084:8084"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:

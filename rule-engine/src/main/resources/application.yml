@@ -32,6 +32,11 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
 
+mendr:
+  tenancy:
+    default-tenant-id: 00000000-0000-0000-0000-000000000001
+    fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}
+
 rules:
   default-ttl-hours: 48
   route-changed-channel: route-changed

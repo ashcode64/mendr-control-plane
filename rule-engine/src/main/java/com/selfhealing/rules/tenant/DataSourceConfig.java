@@ -1,6 +1,5 @@
-package com.selfhealing.gateway.config;
+package com.selfhealing.rules.tenant;
 
-import com.selfhealing.gateway.tenant.TenantAwareDataSource;
 import com.zaxxer.hikari.HikariDataSource;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.context.annotation.Bean;
@@ -11,9 +10,9 @@ import javax.sql.DataSource;
 
 /**
  * Replaces the auto-configured DataSource with a tenant-aware wrapper so every
- * JDBC connection runs under the correct {@code app.current_tenant} for RLS.
- * Reuses Spring Boot's auto-configured {@link DataSourceProperties} (bound from
- * {@code spring.datasource.*}) rather than declaring a second one.
+ * JDBC connection (incl. JdbcTemplate) runs under the correct
+ * {@code app.current_tenant} for RLS. Reuses Spring Boot's auto-configured
+ * {@link DataSourceProperties}.
  */
 @Configuration
 public class DataSourceConfig {
