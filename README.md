@@ -46,6 +46,34 @@ docker compose up -d --build
 - `ANTHROPIC_API_KEY`
 - `GATEWAY_INTERNAL_API_KEY` for trusted edge/control-plane calls
 
+## Multi-tenancy, isolation & auth
+
+Isolation is enforced by Postgres Row-Level Security. `infra/init_v2_multitenancy.sql`
+(applied after `init.sql`) adds a `tenants` registry, `users`/`memberships`,
+per-tenant `api_keys`, a global drift corpus, a `tenant_id` column + fail-closed
+RLS policy on every tenant-scoped table, and a least-privilege `app_user` role.
+
+Key operational facts:
+
+- The api-gateway connects as **`app_user`** (non-superuser) so RLS is actually
+  enforced — superusers bypass it. Configure via `APP_DB_USERNAME` / `APP_DB_PASSWORD`
+  (defaults `app_user` / `app_secret`; change in production).
+- Each request binds a tenant (`app.current_tenant`) for the connection. When no
+  credential is present it falls back to the default tenant
+  (`00000000-0000-0000-0000-000000000001`), preserving single-tenant behavior.
+  Set `MENDR_TENANCY_FALLBACK_TO_DEFAULT=false` for strict isolation.
+- **Human auth (WorkOS):** set `MENDR_AUTH_WORKOS_JWKS_URI` (+ `_ISSUER`, `_AUDIENCE`)
+  to validate dashboard JWTs; the `org_id` claim maps to a tenant via `tenants.workos_org_id`.
+- **Machine/edge auth:** per-tenant API keys (`<prefix>.<secret>`, stored hashed)
+  presented as `X-Api-Key` or `Authorization: Bearer mendr_...`.
+- **Enforcement:** `MENDR_AUTH_ENFORCE=false` (default) leaves endpoints open but
+  still binds tenant context from any credential — a safe incremental rollout.
+  Set `true` to require auth on all non-health endpoints.
+
+> Other control-plane services (ai-analysis, rule-engine, notification) still
+> connect as the superuser and write to the default tenant via column defaults;
+> moving them onto `app_user` + tenant context is the next rollout step.
+
 ## Ports
 
 - `3000` dashboard
