@@ -4,6 +4,7 @@ import com.selfhealing.gateway.model.OriginOverrideRule;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -14,4 +15,6 @@ public interface OriginOverrideRuleRepository extends JpaRepository<OriginOverri
             String sourceService, String targetService, String endpoint);
 
     List<OriginOverrideRule> findAllByIsActiveTrue();
+
+    List<OriginOverrideRule> findAllByIsActiveTrueAndExpiresAtBefore(LocalDateTime now);
 }

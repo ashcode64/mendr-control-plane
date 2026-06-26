@@ -9,7 +9,6 @@ import com.selfhealing.gateway.util.TypeCoercer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -170,9 +169,15 @@ public class TransformationEngine {
         routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
     }
 
-    /** Scheduled job to expire TTL-based rules */
-    @Scheduled(fixedDelay = 300_000) // every 5 minutes
-    public void expireRules() {
+    /**
+     * Expire TTL-based request transformation rules for the current tenant
+     * context. Deactivates each expired rule and evicts/republishes its route so
+     * the edge drops it. Scheduling is owned by {@link RuleExpirySweeper} (which
+     * binds the tenant context); call this directly only with a tenant bound.
+     *
+     * @return number of rules expired
+     */
+    public int expireRules() {
         List<TransformationRule> expired = ruleRepository.findExpiredRules(LocalDateTime.now());
         for (TransformationRule rule : expired) {
             rule.setActive(false);
@@ -183,5 +188,6 @@ public class TransformationEngine {
         if (!expired.isEmpty()) {
             log.info("Expired {} transformation rules", expired.size());
         }
+        return expired.size();
     }
 }

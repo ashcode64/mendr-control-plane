@@ -7,7 +7,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -144,9 +143,14 @@ public class DynamicRoutingService {
         routeChangedPublisher.publishTargetService(serviceName);
     }
 
-    /** Scheduled expiry check every 5 minutes */
-    @Scheduled(fixedDelay = 300_000)
-    public void expireRoutingRules() {
+    /**
+     * Expire TTL-based routing rules for the current tenant context, reverting
+     * each service to its original URL and republishing. Scheduling is owned by
+     * {@link RuleExpirySweeper}.
+     *
+     * @return number of rules expired
+     */
+    public int expireRoutingRules() {
         List<RoutingRule> expired = routingRuleRepository
             .findAllByIsActiveTrueAndExpiresAtBefore(LocalDateTime.now());
 
@@ -166,6 +170,7 @@ public class DynamicRoutingService {
         if (!expired.isEmpty()) {
             log.info("Expired {} routing rules", expired.size());
         }
+        return expired.size();
     }
 
     /** Active, non-expired rules only — matches schema rules /active listing behavior. */
