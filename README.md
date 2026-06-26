@@ -70,9 +70,13 @@ Key operational facts:
   still binds tenant context from any credential — a safe incremental rollout.
   Set `true` to require auth on all non-health endpoints.
 
-> Other control-plane services (ai-analysis, rule-engine, notification) still
-> connect as the superuser and write to the default tenant via column defaults;
-> moving them onto `app_user` + tenant context is the next rollout step.
+All four services (api-gateway, ai-analysis, rule-engine, notification) connect as
+`app_user` and are tenant-aware: writes stamp `tenant_id` from context (satisfying
+RLS `WITH CHECK`), Kafka messages carry a `tenant_id` header, Redis keys are
+namespaced `t:{tenantId}:`, and a tenant-aware sweeper expires TTL rules across all
+tenants. See **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)** for the full design,
+configuration reference, verification, and **the frontend changes still required**
+to enable human (WorkOS) auth.
 
 ## Ports
 
