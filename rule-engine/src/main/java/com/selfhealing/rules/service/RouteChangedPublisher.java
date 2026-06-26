@@ -35,8 +35,11 @@ public class RouteChangedPublisher {
             return;
         }
         try {
-            stringRedisTemplate.convertAndSend(routeChangedChannel, routeKey);
-            log.debug("Published route-changed: {}", routeKey);
+            // Encode the tenant (bound from the consumed Kafka record) so the
+            // gateway subscriber republishes only this tenant's routes.
+            String message = com.selfhealing.rules.tenant.TenantKeys.encodeMessage(routeKey);
+            stringRedisTemplate.convertAndSend(routeChangedChannel, message);
+            log.debug("Published route-changed: {}", message);
         } catch (Exception e) {
             log.warn("Failed to publish route-changed for {}: {}", routeKey, e.getMessage());
         }

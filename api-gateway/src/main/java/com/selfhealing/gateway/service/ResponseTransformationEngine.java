@@ -153,7 +153,8 @@ public class ResponseTransformationEngine {
 
     @SuppressWarnings("unchecked")
     private List<ResponseTransformationRule> getActiveRules(String serviceA, String serviceB, String endpoint) {
-        String cacheKey = CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint);
         Object cached = redisTemplate.opsForValue().get(cacheKey);
         if (cached != null) {
             try {
@@ -170,7 +171,8 @@ public class ResponseTransformationEngine {
     }
 
     public void evictCache(String serviceA, String serviceB, String endpoint) {
-        redisTemplate.delete(CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint);
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint));
         routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
     }
 

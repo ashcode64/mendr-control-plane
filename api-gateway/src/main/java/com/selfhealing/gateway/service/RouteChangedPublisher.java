@@ -20,8 +20,12 @@ public class RouteChangedPublisher {
     public void publishRouteKey(String routeKey) {
         if (routeKey == null || routeKey.isBlank()) return;
         try {
-            stringRedisTemplate.convertAndSend(properties.getRouteChangedChannel(), routeKey);
-            log.debug("Published route-changed: {}", routeKey);
+            // Encode the originating tenant into the message so subscribers (which
+            // run with no thread-bound context) can re-establish it and only
+            // republish/invalidate that tenant's routes.
+            String message = com.selfhealing.gateway.tenant.TenantKeys.encodeMessage(routeKey);
+            stringRedisTemplate.convertAndSend(properties.getRouteChangedChannel(), message);
+            log.debug("Published route-changed: {}", message);
         } catch (Exception e) {
             log.warn("Failed to publish route-changed for {}: {}", routeKey, e.getMessage());
         }

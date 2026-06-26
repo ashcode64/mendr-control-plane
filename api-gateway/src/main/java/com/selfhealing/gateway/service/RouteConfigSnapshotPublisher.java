@@ -21,6 +21,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.async.DeferredResult;
 
+import com.selfhealing.gateway.tenant.TenantContext;
+import com.selfhealing.gateway.tenant.TenantKeys;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -28,7 +31,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -43,6 +48,11 @@ public class RouteConfigSnapshotPublisher {
     public static final String REDIS_KEY_PREFIX = "mendr:routeconfig:";
     static final String SYNC_VERSION_KEY = "mendr:routeconfig:sync-version";
 
+    /** Physical, tenant-namespaced Redis key for the per-tenant sync version. */
+    private static String syncVersionKey() {
+        return TenantKeys.scoped(SYNC_VERSION_KEY);
+    }
+
     private final RouteConfigService routeConfigService;
     private final RouteProgramService routeProgramService;
     private final InterServiceRouteDiscovery routeDiscovery;
@@ -52,9 +62,23 @@ public class RouteConfigSnapshotPublisher {
     private final GatewayOpenRestyProperties openRestyProperties;
 
     private final Object pendingSyncLock = new Object();
-    private final List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> pendingSyncs =
-            new CopyOnWriteArrayList<>();
-    private final Set<String> knownRouteKeys = new HashSet<>();
+
+    // Per-tenant sync state: each tenant gets its own waiter list and known-key
+    // set so one tenant's publish never wakes another's edge or mis-computes
+    // removals against a different tenant's route set.
+    private final Map<UUID, List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>>> pendingSyncsByTenant =
+            new ConcurrentHashMap<>();
+    private final Map<UUID, Set<String>> knownRouteKeysByTenant = new ConcurrentHashMap<>();
+
+    private List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> pendingSyncs() {
+        return pendingSyncsByTenant.computeIfAbsent(
+                TenantContext.currentOrDefault(), k -> new CopyOnWriteArrayList<>());
+    }
+
+    private Set<String> knownRouteKeys() {
+        return knownRouteKeysByTenant.computeIfAbsent(
+                TenantContext.currentOrDefault(), k -> new HashSet<>());
+    }
 
     @EventListener(ApplicationReadyEvent.class)
     public void warmPublishOnStartup() {
@@ -98,7 +122,7 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public long currentConfigVersion() {
-        String val = stringRedisTemplate.opsForValue().get(SYNC_VERSION_KEY);
+        String val = stringRedisTemplate.opsForValue().get(syncVersionKey());
         if (val == null || val.isBlank()) {
             return 0L;
         }
@@ -144,6 +168,7 @@ public class RouteConfigSnapshotPublisher {
 
         List<String> removed = new ArrayList<>();
         synchronized (pendingSyncLock) {
+            Set<String> knownRouteKeys = knownRouteKeys();
             for (String key : knownRouteKeys) {
                 // Only remove a key when the route is genuinely gone from discovery —
                 // never merely because this run failed to (re)build its snapshot.
@@ -171,7 +196,7 @@ public class RouteConfigSnapshotPublisher {
                 deferred.setResult(ResponseEntity.ok(buildFullSyncPayload()));
                 return;
             }
-            pendingSyncs.add(deferred);
+            pendingSyncs().add(deferred);
         }
     }
 
@@ -197,15 +222,16 @@ public class RouteConfigSnapshotPublisher {
             applyDockerHostRewrite(snapshot);
 
             String redisKey = redisKey(sourceService, targetService, endpoint);
+            String physicalKey = TenantKeys.scoped(redisKey);
             String json = objectMapper.writeValueAsString(snapshot);
 
             int ttlSeconds = internalProperties.getRouteConfigSnapshotTtlSeconds();
             if (ttlSeconds > 0) {
-                stringRedisTemplate.opsForValue().set(redisKey, json, Duration.ofSeconds(ttlSeconds));
+                stringRedisTemplate.opsForValue().set(physicalKey, json, Duration.ofSeconds(ttlSeconds));
             } else {
-                stringRedisTemplate.opsForValue().set(redisKey, json);
+                stringRedisTemplate.opsForValue().set(physicalKey, json);
             }
-            log.debug("Published route snapshot {}", redisKey);
+            log.debug("Published route snapshot {}", physicalKey);
         } catch (JsonProcessingException e) {
             log.warn("Failed to serialize route snapshot for {}:{}:{} — {}",
                     sourceService, targetService, endpoint, e.getMessage());
@@ -228,11 +254,12 @@ public class RouteConfigSnapshotPublisher {
     }
 
     private void bumpVersionAndNotifySyncWaiters() {
-        stringRedisTemplate.opsForValue().increment(SYNC_VERSION_KEY);
+        stringRedisTemplate.opsForValue().increment(syncVersionKey());
         RouteConfigSyncPayload payload = buildFullSyncPayload();
 
         List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> waiters;
         synchronized (pendingSyncLock) {
+            List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> pendingSyncs = pendingSyncs();
             waiters = new ArrayList<>(pendingSyncs);
             pendingSyncs.clear();
         }

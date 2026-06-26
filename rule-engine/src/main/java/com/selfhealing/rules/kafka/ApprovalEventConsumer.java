@@ -145,7 +145,7 @@ public class ApprovalEventConsumer {
             newUrl, serviceName);
 
         // Update route in Redis
-        String cacheKey = "route:" + serviceName;
+        String cacheKey = com.selfhealing.rules.tenant.TenantKeys.scoped("route:" + serviceName);
         redisTemplate.opsForValue().set(cacheKey, newUrl, defaultTtlHours, TimeUnit.HOURS);
 
         // Update failure status
@@ -192,7 +192,7 @@ public class ApprovalEventConsumer {
             failureId, analysisId, allowedMethods, allowedHeaders, actedBy, expiresAt);
 
         // Warm Redis
-        String cacheKey = "cors:" + targetService + ":" + newOrigin;
+        String cacheKey = com.selfhealing.rules.tenant.TenantKeys.scoped("cors:" + targetService + ":" + newOrigin);
         redisTemplate.opsForValue().set(cacheKey, true, defaultTtlHours, TimeUnit.HOURS);
 
         // Update failure status
@@ -364,7 +364,8 @@ public class ApprovalEventConsumer {
         jdbcTemplate.update("UPDATE api_failures SET status = 'RESOLVED' WHERE id = ?::uuid", failureId);
 
         // Evict response rule cache in gateway
-        String cacheKey = "resp_rules:" + serviceA + ":" + serviceB + ":" + endpoint;
+        String cacheKey = com.selfhealing.rules.tenant.TenantKeys.scoped(
+                "resp_rules:" + serviceA + ":" + serviceB + ":" + endpoint);
         redisTemplate.delete(cacheKey);
 
         audit(ruleId, "RESPONSE_TRANSFORMATION_RULE", "DEPLOYED", actedBy,
@@ -407,7 +408,8 @@ public class ApprovalEventConsumer {
         jdbcTemplate.update("UPDATE api_failures SET status = 'RESOLVED' WHERE id = ?::uuid", failureId);
 
         // Evict gateway rule cache
-        String cacheKey = "rules:" + serviceA + ":" + serviceB + ":" + endpoint;
+        String cacheKey = com.selfhealing.rules.tenant.TenantKeys.scoped(
+                "rules:" + serviceA + ":" + serviceB + ":" + endpoint);
         redisTemplate.delete(cacheKey);
 
         audit(ruleId, "TRANSFORMATION_RULE", "DEPLOYED", actedBy,

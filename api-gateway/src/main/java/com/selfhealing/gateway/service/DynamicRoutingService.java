@@ -39,7 +39,7 @@ public class DynamicRoutingService {
      * Priority: Redis route cache > active RoutingRule > Mendr services registry > hostname fallback
      */
     public String resolveUrl(String serviceName) {
-        String cacheKey = ROUTE_KEY_PREFIX + serviceName;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(ROUTE_KEY_PREFIX + serviceName);
         Object cached = redisTemplate.opsForValue().get(cacheKey);
         if (cached != null) {
             String cachedUrl = normalizeWithRegistry(serviceName, cached.toString());
@@ -116,7 +116,7 @@ public class DynamicRoutingService {
 
         // Update Redis immediately — cache miss avoided for all subsequent requests
         evictRouteCache(serviceName);
-        String cacheKey = ROUTE_KEY_PREFIX + serviceName;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(ROUTE_KEY_PREFIX + serviceName);
         redisTemplate.opsForValue().set(cacheKey, newUrl, ttlHours, TimeUnit.HOURS);
 
         // Update the services table so other lookups stay consistent
@@ -140,7 +140,7 @@ public class DynamicRoutingService {
     }
 
     public void evictRouteCache(String serviceName) {
-        redisTemplate.delete(ROUTE_KEY_PREFIX + serviceName);
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(ROUTE_KEY_PREFIX + serviceName));
         routeChangedPublisher.publishTargetService(serviceName);
     }
 

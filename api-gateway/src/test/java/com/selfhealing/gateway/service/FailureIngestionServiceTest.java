@@ -44,6 +44,10 @@ class FailureIngestionServiceTest {
     private GatewayInternalProperties internalProperties;
     private FailureIngestionService failureIngestionService;
 
+    // Dedup keys are tenant-namespaced; no bound context falls back to default.
+    private static final String DEDUP_KEY =
+            "t:00000000-0000-0000-0000-000000000001:mendr:fail-dedup:order-service:payment-service:/api/payments/process";
+
     @BeforeEach
     void setUp() {
         internalProperties = new GatewayInternalProperties();
@@ -88,7 +92,7 @@ class FailureIngestionServiceTest {
                 .requestPayload(Map.of("amount", 100))
                 .build();
 
-        when(stringRedisTemplate.hasKey("mendr:fail-dedup:order-service:payment-service:/api/payments/process"))
+        when(stringRedisTemplate.hasKey(DEDUP_KEY))
                 .thenReturn(false);
         when(registry.loadRegisteredBaseUrl("payment-service"))
                 .thenReturn(Optional.of("http://localhost:8091"));
@@ -224,7 +228,7 @@ class FailureIngestionServiceTest {
                 .errorMessage("bad schema")
                 .build();
 
-        when(stringRedisTemplate.hasKey("mendr:fail-dedup:order-service:payment-service:/api/payments/process"))
+        when(stringRedisTemplate.hasKey(DEDUP_KEY))
                 .thenReturn(false, true);
         when(registry.loadRegisteredBaseUrl("payment-service")).thenReturn(Optional.empty());
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
@@ -238,7 +242,7 @@ class FailureIngestionServiceTest {
         assertThat(second.isDeduplicated()).isTrue();
         verify(kafkaTemplate, times(1)).send(eq("api.failures"), any(), any());
         verify(valueOperations).set(
-                eq("mendr:fail-dedup:order-service:payment-service:/api/payments/process"),
+                eq(DEDUP_KEY),
                 eq("1"),
                 eq(Duration.ofSeconds(60)));
     }
