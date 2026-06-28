@@ -91,6 +91,13 @@ public class TransformationRule {
         STRIP_UNKNOWN,
         WRAP_ARRAY,
         UNWRAP_ARRAY,
-        NESTED_TRANSFORM
+        NESTED_TRANSFORM,
+        /**
+         * A full MendrScript program (closed-vocabulary AST) authored by the
+         * conversation engine and verified before deploy. {@code ruleDefinition}
+         * carries {@code {schemaVersion, ops:[...]}}. Compiled into snapshot v2
+         * {@code ops[]} rather than the legacy buckets.
+         */
+        DSL_PROGRAM
     }
 }

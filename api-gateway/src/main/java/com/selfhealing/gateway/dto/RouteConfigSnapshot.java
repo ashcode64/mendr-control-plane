@@ -60,6 +60,18 @@ public class RouteConfigSnapshot {
     public static class TransformProgramSnapshot {
         private boolean empty;
         private boolean streamable;
+        /**
+         * MendrScript snapshot schema version. {@code "v1"} = legacy six-bucket only.
+         * {@code "v2"} = also carries {@link #ops}. Lets capability negotiation pick
+         * the right shape per edge (Gap 10).
+         */
+        private String schemaVersion;
+        /**
+         * MendrScript AST ops (snapshot v2). Each entry is a plain-JSON op object
+         * ({@code {op, ...args}}) the edge interpreter walks as DATA. Legacy buckets
+         * below stay populated so v1 edges keep working; upgraded edges prefer ops[].
+         */
+        private List<Map<String, Object>> ops;
         private Map<String, String> renames;
         private Map<String, Object> defaults;
         private Map<String, String> coercions;

@@ -15,6 +15,25 @@ import java.util.Set;
 @Component
 public class TransformProgramCompiler {
 
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(TransformProgramCompiler.class);
+
+    private final MendrScriptCompiler mendrScriptCompiler;
+    private final com.selfhealing.gateway.transform.dsl.MendrScriptVerifier verifier;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public TransformProgramCompiler(MendrScriptCompiler mendrScriptCompiler,
+                                    com.selfhealing.gateway.transform.dsl.MendrScriptVerifier verifier) {
+        this.mendrScriptCompiler = mendrScriptCompiler;
+        this.verifier = verifier;
+    }
+
+    /** Convenience for tests / legacy callers that don't need a Spring-managed compiler. */
+    public TransformProgramCompiler() {
+        this(new MendrScriptCompiler(new com.fasterxml.jackson.databind.ObjectMapper()),
+                new com.selfhealing.gateway.transform.dsl.MendrScriptVerifier());
+    }
+
     public TransformProgram compileRequest(List<TransformationRule> rules) {
         if (rules == null || rules.isEmpty()) {
             return TransformProgram.none();
@@ -26,6 +45,10 @@ public class TransformProgramCompiler {
             }
             Map<String, Object> def = rule.getRuleDefinition();
             if (def == null) {
+                continue;
+            }
+            if (rule.getRuleType() == TransformationRule.RuleType.DSL_PROGRAM) {
+                putDslProgram(acc, def);
                 continue;
             }
             putRenames(acc, def.get("mappings"));
@@ -322,6 +345,31 @@ public class TransformProgramCompiler {
         if (!acc.stripUnknownByPath.isEmpty()) acc.streamable = false;
     }
 
+    /**
+     * DSL_PROGRAM (snapshot v2): parse the stored AST and append its serialized ops to
+     * the merged ops[]. DSL programs always run on the buffered edge path. Ops are
+     * appended in rule order (rules are already id-sorted upstream for determinism).
+     */
+    private void putDslProgram(Acc acc, Map<String, Object> def) {
+        var program = mendrScriptCompiler.parse(def);
+        // Authoritative server-side re-verification at the materialization point: a
+        // DSL program that does not pass the SAME verifier the chatbot used is
+        // skipped (fail-safe) so an unverified/unsafe AST can never reach the edge,
+        // and a single bad rule never blocks the rest of the route from healing.
+        var result = verifier.verify(program);
+        if (!result.valid()) {
+            log.warn("Skipping DSL_PROGRAM rule — failed server-side verification: {}",
+                    String.join("; ", result.errors()));
+            return;
+        }
+        var ops = mendrScriptCompiler.toSnapshotOps(program);
+        if (ops.isEmpty()) {
+            return;
+        }
+        acc.ops.addAll(ops);
+        acc.streamable = false;
+    }
+
     /** Shared for WRAP_ARRAY / UNWRAP_ARRAY: each {path}. */
     private void putPathList(Acc acc, java.util.Map<String, Map<String, Object>> target, Object o) {
         if (!(o instanceof List<?> list)) return;
@@ -358,6 +406,7 @@ public class TransformProgramCompiler {
         final java.util.LinkedHashMap<String, Map<String, Object>> stripUnknownByPath = new java.util.LinkedHashMap<>();
         final java.util.LinkedHashMap<String, Map<String, Object>> wrapArraysByPath = new java.util.LinkedHashMap<>();
         final java.util.LinkedHashMap<String, Map<String, Object>> unwrapArraysByPath = new java.util.LinkedHashMap<>();
+        final List<Map<String, Object>> ops = new ArrayList<>();
         final List<String> conflicts = new ArrayList<>();
         String wrapKey;
         String unwrapKey;
@@ -375,10 +424,13 @@ public class TransformProgramCompiler {
                     && coalesceByPath.isEmpty() && valueMapsByPath.isEmpty()
                     && dateFormatsByPath.isEmpty() && stripUnknownByPath.isEmpty()
                     && wrapArraysByPath.isEmpty() && unwrapArraysByPath.isEmpty()
+                    && ops.isEmpty()
                     && wrapKey == null && unwrapKey == null;
             return TransformProgram.builder()
                     .empty(empty)
                     .streamable(streamable)
+                    .schemaVersion(ops.isEmpty() ? "v1" : "v2")
+                    .ops(List.copyOf(ops))
                     .renames(Map.copyOf(renames))
                     .defaults(Map.copyOf(defaults))
                     .coercions(Map.copyOf(coercions))

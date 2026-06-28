@@ -51,10 +51,16 @@ public class RouteConfigSnapshotPublisher {
     private final GatewayInternalProperties internalProperties;
     private final GatewayOpenRestyProperties openRestyProperties;
 
+    /** Edge capability token: advertises support for snapshot v2 {@code ops[]} (MendrScript). */
+    public static final String CAP_V2 = "v2";
+
     private final Object pendingSyncLock = new Object();
-    private final List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> pendingSyncs =
-            new CopyOnWriteArrayList<>();
+    private final List<PendingSync> pendingSyncs = new CopyOnWriteArrayList<>();
     private final Set<String> knownRouteKeys = new HashSet<>();
+
+    /** A long-poll waiter together with the capabilities the requesting edge advertised. */
+    private record PendingSync(Set<String> caps,
+                               DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {}
 
     @EventListener(ApplicationReadyEvent.class)
     public void warmPublishOnStartup() {
@@ -111,6 +117,21 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public RouteConfigSyncPayload buildFullSyncPayload() {
+        return buildFullSyncPayload(Set.of());
+    }
+
+    /**
+     * Build the sync payload tailored to an edge's advertised capabilities (Gap 10).
+     * The snapshot itself is dual-shape (legacy buckets AND {@code ops[]}), so a v1
+     * edge transparently ignores {@code ops[]} and a v2 edge prefers it. The one
+     * unsafe case is a v2-ONLY route (a DSL program: {@code ops[]} present, buckets
+     * empty) served to a v1 edge — that would silently apply nothing. Such routes are
+     * WITHHELD from non-v2 edges and an alert is logged, rather than shipping a
+     * no-op that hides a needed heal. Withheld routes are treated like a transient
+     * build failure for removal-tracking so they are never evicted.
+     */
+    public RouteConfigSyncPayload buildFullSyncPayload(Set<String> caps) {
+        boolean v2 = caps != null && caps.contains(CAP_V2);
         Map<String, String> routes = new LinkedHashMap<>();
         Set<String> currentKeys = new HashSet<>();
         // Routes whose source still exists but whose snapshot build failed this run.
@@ -128,6 +149,15 @@ public class RouteConfigSnapshotPublisher {
                 snapshot.setSyncValidation(isSyncValidationRoute(
                         triple.source(), triple.target(), triple.endpoint()));
                 applyDockerHostRewrite(snapshot);
+
+                if (!v2 && isV2OnlyRoute(snapshot)) {
+                    // Capability mismatch: this edge cannot run the DSL program. Withhold +
+                    // alert (do NOT evict) so an operator/heartbeat can flag the stale edge.
+                    failedKeys.add(key);
+                    log.warn("Withholding v2-only route {} from a legacy(v1) edge — the edge must "
+                            + "advertise '{}' to receive the MendrScript program", key, CAP_V2);
+                    continue;
+                }
 
                 routes.put(key, objectMapper.writeValueAsString(snapshot));
                 currentKeys.add(key);
@@ -166,12 +196,17 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public void registerPendingSync(long since, DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {
+        registerPendingSync(since, Set.of(), deferred);
+    }
+
+    public void registerPendingSync(long since, Set<String> caps,
+                                    DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {
         synchronized (pendingSyncLock) {
             if (since < currentConfigVersion()) {
-                deferred.setResult(ResponseEntity.ok(buildFullSyncPayload()));
+                deferred.setResult(ResponseEntity.ok(buildFullSyncPayload(caps)));
                 return;
             }
-            pendingSyncs.add(deferred);
+            pendingSyncs.add(new PendingSync(caps == null ? Set.of() : caps, deferred));
         }
     }
 
@@ -236,17 +271,21 @@ public class RouteConfigSnapshotPublisher {
 
     private void bumpVersionAndNotifySyncWaiters() {
         stringRedisTemplate.opsForValue().increment(SYNC_VERSION_KEY);
-        RouteConfigSyncPayload payload = buildFullSyncPayload();
 
-        List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> waiters;
+        List<PendingSync> waiters;
         synchronized (pendingSyncLock) {
             waiters = new ArrayList<>(pendingSyncs);
             pendingSyncs.clear();
         }
 
-        ResponseEntity<RouteConfigSyncPayload> response = ResponseEntity.ok(payload);
-        for (DeferredResult<ResponseEntity<RouteConfigSyncPayload>> waiter : waiters) {
-            waiter.setResult(response);
+        // Each waiter gets a payload tailored to the capabilities it advertised, so a
+        // v1 edge never receives a v2-only route (and vice-versa). Built per distinct
+        // capability set to avoid recomputing for identical edges.
+        Map<Set<String>, RouteConfigSyncPayload> byCaps = new java.util.HashMap<>();
+        for (PendingSync waiter : waiters) {
+            RouteConfigSyncPayload payload = byCaps.computeIfAbsent(
+                    waiter.caps(), this::buildFullSyncPayload);
+            waiter.deferred().setResult(ResponseEntity.ok(payload));
         }
     }
 
@@ -355,6 +394,8 @@ public class RouteConfigSnapshotPublisher {
         return TransformProgramSnapshot.builder()
                 .empty(program.isEmpty())
                 .streamable(program.isStreamable())
+                .schemaVersion(program.getSchemaVersion() != null ? program.getSchemaVersion() : "v1")
+                .ops(program.getOps())
                 .renames(program.getRenames())
                 .defaults(program.getDefaults())
                 .coercions(program.getCoercions())
@@ -371,6 +412,26 @@ public class RouteConfigSnapshotPublisher {
                 .unwrapArrays(program.getUnwrapArrays())
                 .build();
     }
+
+    /** A route is "v2-only" when either direction carries {@code ops[]} but no legacy ops. */
+    static boolean isV2OnlyRoute(RouteConfigSnapshot snapshot) {
+        return isV2OnlyProgram(snapshot.getRequestProgram())
+                || isV2OnlyProgram(snapshot.getResponseProgram());
+    }
+
+    private static boolean isV2OnlyProgram(TransformProgramSnapshot p) {
+        if (p == null || p.getOps() == null || p.getOps().isEmpty()) {
+            return false;
+        }
+        return isEmpty(p.getRenames()) && isEmpty(p.getDefaults()) && isEmpty(p.getCoercions())
+                && isEmpty(p.getRemovals()) && isEmpty(p.getMoves()) && isEmpty(p.getScales())
+                && isEmpty(p.getCoalesce()) && isEmpty(p.getValueMaps()) && isEmpty(p.getDateFormats())
+                && isEmpty(p.getStripUnknown()) && isEmpty(p.getWrapArrays()) && isEmpty(p.getUnwrapArrays())
+                && p.getWrapKey() == null && p.getUnwrapKey() == null;
+    }
+
+    private static boolean isEmpty(Map<?, ?> m) { return m == null || m.isEmpty(); }
+    private static boolean isEmpty(java.util.Collection<?> c) { return c == null || c.isEmpty(); }
 
     private static java.util.Optional<RouteTriple> parseRouteKey(String routeKey) {
         int first = routeKey.indexOf(':');

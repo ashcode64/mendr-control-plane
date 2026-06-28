@@ -14,6 +14,15 @@ public class TransformProgram {
 
     boolean empty;
     boolean streamable;
+    /** Snapshot schema version: {@code "v1"} (legacy buckets) or {@code "v2"} (also {@link #ops}). */
+    String schemaVersion;
+    /**
+     * MendrScript AST ops (snapshot v2). Each entry is the plain-JSON serialization
+     * of a {@link com.selfhealing.gateway.transform.dsl.Op} — the closed-vocabulary
+     * DSL the verifier checks and both runtimes execute. Present alongside the legacy
+     * buckets so v1 edges keep working.
+     */
+    List<Map<String, Object>> ops;
     Map<String, String> renames;
     Map<String, Object> defaults;
     Map<String, String> coercions;
@@ -57,6 +66,8 @@ public class TransformProgram {
         return TransformProgram.builder()
                 .empty(true)
                 .streamable(true)
+                .schemaVersion("v1")
+                .ops(List.of())
                 .renames(Map.of())
                 .defaults(Map.of())
                 .coercions(Map.of())

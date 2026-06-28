@@ -154,6 +154,8 @@ public class RouteProgramService {
         TransformProgramSnapshot snap = TransformProgramSnapshot.builder()
                 .empty(program.isEmpty())
                 .streamable(program.isStreamable())
+                .schemaVersion(program.getSchemaVersion() != null ? program.getSchemaVersion() : "v1")
+                .ops(program.getOps())
                 .renames(program.getRenames())
                 .defaults(program.getDefaults())
                 .coercions(program.getCoercions())

@@ -17,6 +17,7 @@
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/service/SchemaDiffResult.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/service/FailureContextEnricher.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/service/context/RoutingContext.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/service/tool/MendrScriptGatewayClient.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/service/RuleValidator.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/service/tool/AnalysisTools.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/main/java/com/selfhealing/analysis/controller/AnalysisController.java
