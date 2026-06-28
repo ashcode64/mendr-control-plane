@@ -84,6 +84,13 @@ public class TransformationRule {
         ADD_DEFAULT,
         REMOVE_FIELD,
         FIELD_MOVE,
+        SCALE,
+        COALESCE,
+        MAP_VALUE,
+        REFORMAT_DATE,
+        STRIP_UNKNOWN,
+        WRAP_ARRAY,
+        UNWRAP_ARRAY,
         NESTED_TRANSFORM
     }
 }

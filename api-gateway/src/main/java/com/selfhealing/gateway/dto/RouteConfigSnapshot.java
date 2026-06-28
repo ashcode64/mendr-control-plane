@@ -68,5 +68,19 @@ public class RouteConfigSnapshot {
         private String unwrapKey;
         /** FIELD_MOVE restructure ops: each {from, to, copy?} with JSON-Pointer paths. */
         private List<Map<String, Object>> moves;
+        /** SCALE value ops: each {path, numerator, denominator, expectedMin, expectedMax}. */
+        private List<Map<String, Object>> scales;
+        /** COALESCE ops: each {path, value}, applied only when current value is null. */
+        private List<Map<String, Object>> coalesce;
+        /** MAP_VALUE ops: each {path, mapping, onUnmapped}. */
+        private List<Map<String, Object>> valueMaps;
+        /** REFORMAT_DATE ops: each {path, sourceFormat, targetFormat}. */
+        private List<Map<String, Object>> dateFormats;
+        /** STRIP_UNKNOWN ops: each {path, allowed:[...]}. */
+        private List<Map<String, Object>> stripUnknown;
+        /** WRAP_ARRAY ops: each {path}. */
+        private List<Map<String, Object>> wrapArrays;
+        /** UNWRAP_ARRAY ops: each {path}. */
+        private List<Map<String, Object>> unwrapArrays;
     }
 }

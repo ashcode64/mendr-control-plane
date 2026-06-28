@@ -185,6 +185,13 @@ public class RouteConfigSnapshotPublisher {
         } catch (RouteProgramService.RouteProgramIntegrityException e) {
             log.error("Skipping publish for {}:{}:{} — {}", sourceService, targetService, endpoint, e.getMessage());
             return;
+        } catch (com.selfhealing.gateway.transform.TransformProgramConflictException e) {
+            // Conflicting approved rules (plan §4.10) — keep the last-good materialized
+            // program live and skip publish; the conflicting proposal needs human
+            // supersede/merge rather than silently clobbering another approved rule.
+            log.error("Skipping publish for {}:{}:{} — conflicting rules: {}",
+                    sourceService, targetService, endpoint, e.getMessage());
+            return;
         } catch (Exception e) {
             log.warn("Recompile failed for {}:{}:{} ({}). Publishing from assembled config.",
                     sourceService, targetService, endpoint, e.getMessage());
@@ -355,6 +362,13 @@ public class RouteConfigSnapshotPublisher {
                 .wrapKey(program.getWrapKey())
                 .unwrapKey(program.getUnwrapKey())
                 .moves(program.getMoves())
+                .scales(program.getScales())
+                .coalesce(program.getCoalesce())
+                .valueMaps(program.getValueMaps())
+                .dateFormats(program.getDateFormats())
+                .stripUnknown(program.getStripUnknown())
+                .wrapArrays(program.getWrapArrays())
+                .unwrapArrays(program.getUnwrapArrays())
                 .build();
     }
 

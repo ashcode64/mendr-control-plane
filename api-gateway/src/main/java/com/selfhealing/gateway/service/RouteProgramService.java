@@ -72,10 +72,17 @@ public class RouteProgramService {
     public RecompileResult recompileRoute(String source, String target, String endpoint, String triggeredBy) {
         LocalDateTime now = LocalDateTime.now();
 
-        List<TransformationRule> reqRules =
-                transformationRuleRepository.findActiveNonExpiredForRoute(source, target, endpoint, now);
-        List<ResponseTransformationRule> respRules =
-                responseTransformationRuleRepository.findActiveNonExpiredForRoute(source, target, endpoint, now);
+        List<TransformationRule> reqRules = new ArrayList<>(
+                transformationRuleRepository.findActiveNonExpiredForRoute(source, target, endpoint, now));
+        List<ResponseTransformationRule> respRules = new ArrayList<>(
+                responseTransformationRuleRepository.findActiveNonExpiredForRoute(source, target, endpoint, now));
+
+        // Deterministic merge order (plan §4.10): sort by id so the merged program
+        // — and therefore its hash — is stable regardless of DB row ordering.
+        reqRules.sort(java.util.Comparator.comparing(
+                r -> r.getId() == null ? "" : r.getId().toString()));
+        respRules.sort(java.util.Comparator.comparing(
+                r -> r.getId() == null ? "" : r.getId().toString()));
 
         TransformProgram reqProgram = compiler.compileRequest(reqRules);
         TransformProgram respProgram = compiler.compileResponse(respRules);
@@ -154,6 +161,13 @@ public class RouteProgramService {
                 .wrapKey(program.getWrapKey())
                 .unwrapKey(program.getUnwrapKey())
                 .moves(program.getMoves())
+                .scales(program.getScales())
+                .coalesce(program.getCoalesce())
+                .valueMaps(program.getValueMaps())
+                .dateFormats(program.getDateFormats())
+                .stripUnknown(program.getStripUnknown())
+                .wrapArrays(program.getWrapArrays())
+                .unwrapArrays(program.getUnwrapArrays())
                 .build();
         return objectMapper.convertValue(snap, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
     }
@@ -182,35 +196,46 @@ public class RouteProgramService {
         }
     }
 
+    /**
+     * Append the materialized program to {@code route_program_history}. This runs
+     * inside {@link #recompileRoute}'s transaction and is intentionally NOT
+     * swallowed (plan §4.14 follow-up): the history row is the audit/rollback
+     * substrate, so if it cannot be written the whole recompile must roll back
+     * rather than advance the live program with a missing history entry.
+     */
     private void writeHistory(RouteProgram rp) {
+        final String reqJson;
+        final String respJson;
         try {
-            String reqJson = objectMapper.writeValueAsString(rp.getRequestProgram());
-            String respJson = objectMapper.writeValueAsString(rp.getResponseProgram());
-            UUID[] reqIds = rp.getRequestRuleIds() == null ? new UUID[0] : rp.getRequestRuleIds().toArray(new UUID[0]);
-            UUID[] respIds = rp.getResponseRuleIds() == null ? new UUID[0] : rp.getResponseRuleIds().toArray(new UUID[0]);
-            jdbcTemplate.update(con -> {
-                var ps = con.prepareStatement("""
-                        INSERT INTO route_program_history
-                            (source_service, target_service, endpoint, request_program, response_program,
-                             request_rule_ids, response_rule_ids, program_hash, version, compiled_by, compiled_at)
-                        VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?)
-                        """);
-                ps.setString(1, rp.getSourceService());
-                ps.setString(2, rp.getTargetService());
-                ps.setString(3, rp.getEndpoint());
-                ps.setString(4, reqJson);
-                ps.setString(5, respJson);
-                ps.setArray(6, con.createArrayOf("uuid", reqIds));
-                ps.setArray(7, con.createArrayOf("uuid", respIds));
-                ps.setString(8, rp.getProgramHash());
-                ps.setLong(9, rp.getVersion());
-                ps.setString(10, rp.getCompiledBy());
-                ps.setObject(11, rp.getCompiledAt());
-                return ps;
-            });
+            reqJson = objectMapper.writeValueAsString(rp.getRequestProgram());
+            respJson = objectMapper.writeValueAsString(rp.getResponseProgram());
         } catch (Exception e) {
-            log.warn("route_program_history write failed for {}:{}:{} — {}",
-                    rp.getSourceService(), rp.getTargetService(), rp.getEndpoint(), e.getMessage());
+            throw new IllegalStateException(
+                    "Failed to serialize route_program_history payload for %s:%s:%s — %s"
+                            .formatted(rp.getSourceService(), rp.getTargetService(),
+                                    rp.getEndpoint(), e.getMessage()), e);
         }
+        UUID[] reqIds = rp.getRequestRuleIds() == null ? new UUID[0] : rp.getRequestRuleIds().toArray(new UUID[0]);
+        UUID[] respIds = rp.getResponseRuleIds() == null ? new UUID[0] : rp.getResponseRuleIds().toArray(new UUID[0]);
+        jdbcTemplate.update(con -> {
+            var ps = con.prepareStatement("""
+                    INSERT INTO route_program_history
+                        (source_service, target_service, endpoint, request_program, response_program,
+                         request_rule_ids, response_rule_ids, program_hash, version, compiled_by, compiled_at)
+                    VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?)
+                    """);
+            ps.setString(1, rp.getSourceService());
+            ps.setString(2, rp.getTargetService());
+            ps.setString(3, rp.getEndpoint());
+            ps.setString(4, reqJson);
+            ps.setString(5, respJson);
+            ps.setArray(6, con.createArrayOf("uuid", reqIds));
+            ps.setArray(7, con.createArrayOf("uuid", respIds));
+            ps.setString(8, rp.getProgramHash());
+            ps.setLong(9, rp.getVersion());
+            ps.setString(10, rp.getCompiledBy());
+            ps.setObject(11, rp.getCompiledAt());
+            return ps;
+        });
     }
 }
