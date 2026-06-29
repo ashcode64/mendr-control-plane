@@ -121,26 +121,33 @@ export const api = {
         const reader = resp.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        // Parse one SSE event block (fields separated by single newlines).
+        const emit = block => {
+          let ev = 'message';
+          let data = '';
+          block.split('\n').forEach(line => {
+            if (line.startsWith('event:')) ev = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          });
+          if (data) {
+            try { onEvent(ev, JSON.parse(data)); }
+            catch { onEvent(ev, { raw: data }); }
+          }
+        };
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
-          buffer += decoder.decode(value, { stream: true });
+          // Normalize CRLF -> LF: sse_starlette delimits events with \r\n\r\n, so a
+          // naive indexOf('\n\n') would never match and every event would be dropped.
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
           let idx;
           while ((idx = buffer.indexOf('\n\n')) >= 0) {
-            const raw = buffer.slice(0, idx);
+            emit(buffer.slice(0, idx));
             buffer = buffer.slice(idx + 2);
-            let ev = 'message';
-            let data = '';
-            raw.split('\n').forEach(line => {
-              if (line.startsWith('event:')) ev = line.slice(6).trim();
-              else if (line.startsWith('data:')) data += line.slice(5).trim();
-            });
-            if (data) {
-              try { onEvent(ev, JSON.parse(data)); }
-              catch { onEvent(ev, { raw: data }); }
-            }
           }
         }
+        // Flush a trailing event that wasn't terminated by a blank line.
+        if (buffer.trim()) emit(buffer);
       } catch (e) {
         if (e.name !== 'AbortError') onEvent('error', { message: e.message });
       } finally {
