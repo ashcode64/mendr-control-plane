@@ -89,6 +89,7 @@ services:
       SPRING_DATASOURCE_PASSWORD: secret
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
