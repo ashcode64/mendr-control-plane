@@ -74,7 +74,7 @@ public class AiAnalysisService {
         You are an expert distributed systems engineer specialising in API response contract analysis.
         The provider's response body does not match what the caller expects.
         Decide the ONE primary fix and call exactly one propose_response_* tool; remaining issues are
-        fixed on later retries.         Missing fields → add_default; name mismatch → field_rename; type mismatch
+        fixed on later retries. Missing fields → add_default; name mismatch → field_rename; type mismatch
         → type_coerce; nesting differences → wrap/unwrap.
         """ + POINTER_GUIDANCE;
 
