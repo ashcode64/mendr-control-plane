@@ -27,6 +27,24 @@ public final class RuleValidator {
             "credit_card_number",
             "internal_routing_id");
 
+    /**
+     * Leading JSON-Pointer segments that name the CONTEXT wrapper the model is shown
+     * (see {@link com.selfhealing.analysis.service.context.SchemaContext}), not the
+     * payload it transforms. The model sometimes points into this wrapper
+     * (e.g. {@code /actualRequestPayload/tag_sent}); these are stripped defensively
+     * before validation so a single leaked prefix is repaired rather than shipped as
+     * a no-op fix. Compared case-insensitively against the first decoded segment.
+     */
+    static final Set<String> CONTEXT_POINTER_PREFIXES = Set.of(
+            "actualrequestpayload",
+            "actualresponsepayload",
+            "schema",
+            "receivercontract",
+            "sendercontract",
+            "callerresponsecontract",
+            "providerresponsecontract",
+            "payload");
+
     public record ValidationResult(boolean deployable, String reason) {
         public static ValidationResult ok() {
             return new ValidationResult(true, null);
@@ -43,6 +61,23 @@ public final class RuleValidator {
             Map<String, Object> rules,
             ApiFailureEvent event,
             List<String> upstreamAllowedOrigins) {
+        return validate(rules, event, upstreamAllowedOrigins, null);
+    }
+
+    /**
+     * Payload-aware validation. When {@code actualPayload} is non-null, request
+     * restructure rules (FIELD_MOVE / FIELD_RENAME) are additionally checked against
+     * ground truth: the source field a move/rename names must actually exist in the
+     * payload. This rejects hallucinated relocations (a model "fixing" a field that
+     * was renamed away would otherwise emit a move whose source never resolves — a
+     * silent fail-open no-op). When {@code actualPayload} is null the existence check
+     * is skipped (callers without payload context, and unit tests, keep the old shape).
+     */
+    public static ValidationResult validate(
+            Map<String, Object> rules,
+            ApiFailureEvent event,
+            List<String> upstreamAllowedOrigins,
+            Map<String, Object> actualPayload) {
 
         if (rules == null || rules.isEmpty()) {
             return ValidationResult.fail("empty transformation rules");
@@ -64,8 +99,8 @@ public final class RuleValidator {
             case "ROUTING_OVERRIDE" -> validateRouting(rules);
             case "TYPE_COERCE" -> validateTypeCoerce(rules);
             case "ADD_DEFAULT" -> validateAddDefault(rules);
-            case "FIELD_RENAME" -> validateFieldRename(rules);
-            case "FIELD_MOVE" -> validateFieldMove(rules);
+            case "FIELD_RENAME" -> validateFieldRename(rules, actualPayload);
+            case "FIELD_MOVE" -> validateFieldMove(rules, actualPayload);
             case "SCALE" -> validateScale(rules);
             case "COALESCE" -> validateCoalesce(rules);
             case "MAP_VALUE" -> validateMapValue(rules);
@@ -75,6 +110,72 @@ public final class RuleValidator {
             case "UNWRAP_ARRAY" -> validatePathList(rules, "unwrapArrays", "UNWRAP_ARRAY");
             default -> ValidationResult.ok();
         };
+    }
+
+    /**
+     * Defensively strip a leaked context-wrapper prefix (e.g. {@code /actualRequestPayload})
+     * from every JSON Pointer the rule carries, mutating {@code rules} in place. A
+     * pointer like {@code /actualRequestPayload/obj_id/tag_sent} becomes
+     * {@code /obj_id/tag_sent}. Returns the number of pointers repaired (for logging).
+     *
+     * <p>This is a repair, not a validator: it runs before {@link #validate} so the
+     * protected-path scan and ground-truth check see payload-root pointers. Pointers
+     * that are already correct are left untouched.
+     */
+    public static int normalizeContextPointers(Map<String, Object> rules) {
+        if (rules == null || rules.isEmpty()) return 0;
+        int[] repaired = {0};
+        if (rules.get("moves") instanceof List<?> moves) {
+            for (Object o : moves) {
+                if (o instanceof Map<?, ?> raw) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> m = (Map<String, Object>) raw;
+                    repaired[0] += repairPointerKey(m, "from");
+                    repaired[0] += repairPointerKey(m, "to");
+                }
+            }
+        }
+        // List-of-{path} rule shapes (scale, valueMaps, dateFormats, strip, wrap/unwrap, coalesce).
+        for (String key : List.of("scales", "valueMaps", "dateFormats", "stripUnknown",
+                "wrapArrays", "unwrapArrays", "coalesce")) {
+            if (rules.get(key) instanceof List<?> list) {
+                for (Object o : list) {
+                    if (o instanceof Map<?, ?> raw) {
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> m = (Map<String, Object>) raw;
+                        repaired[0] += repairPointerKey(m, "path");
+                    }
+                }
+            }
+        }
+        return repaired[0];
+    }
+
+    private static int repairPointerKey(Map<String, Object> m, String key) {
+        Object v = m.get(key);
+        if (!(v instanceof String s)) return 0;
+        String stripped = stripContextPrefix(s);
+        if (!stripped.equals(s)) {
+            m.put(key, stripped);
+            return 1;
+        }
+        return 0;
+    }
+
+    /**
+     * Remove a single leading context-wrapper segment from an absolute pointer.
+     * {@code /actualRequestPayload/a/b -> /a/b}. Leaves non-prefixed pointers and
+     * non-absolute strings unchanged. Only the FIRST segment is considered, so a
+     * legitimate field that merely shares a name deeper in the tree is unaffected.
+     */
+    static String stripContextPrefix(String pointer) {
+        if (pointer == null || !pointer.startsWith("/")) return pointer;
+        int second = pointer.indexOf('/', 1);
+        String first = (second < 0 ? pointer.substring(1) : pointer.substring(1, second));
+        String decoded = first.replace("~1", "/").replace("~0", "~").toLowerCase();
+        if (!CONTEXT_POINTER_PREFIXES.contains(decoded)) return pointer;
+        String rest = (second < 0 ? "" : pointer.substring(second));
+        return rest.isEmpty() ? pointer : rest;
     }
 
     private static ValidationResult validateOriginOverride(
@@ -163,17 +264,33 @@ public final class RuleValidator {
         return ValidationResult.ok();
     }
 
-    private static ValidationResult validateFieldRename(Map<String, Object> rules) {
+    private static ValidationResult validateFieldRename(Map<String, Object> rules, Map<String, Object> actualPayload) {
         if (!(rules.get("mappings") instanceof Map<?, ?> m) || m.isEmpty()) {
             return ValidationResult.fail("mappings map is required for FIELD_RENAME");
+        }
+        // Ground truth: the OLD name (rename source) must exist in the payload, else the
+        // rename can never fire — a confident no-op. FIELD_RENAME keys are flat field
+        // names; match against any leaf name present in the payload.
+        if (actualPayload != null && !actualPayload.isEmpty()) {
+            Set<String> presentLeaves = payloadLeafNames(actualPayload);
+            for (Object k : m.keySet()) {
+                String oldName = str(k);
+                if (!oldName.isBlank() && !presentLeaves.contains(oldName)) {
+                    return ValidationResult.fail(
+                            "rename source '" + oldName + "' not found in actual payload (no-op rename)");
+                }
+            }
         }
         return ValidationResult.ok();
     }
 
-    private static ValidationResult validateFieldMove(Map<String, Object> rules) {
+    private static ValidationResult validateFieldMove(Map<String, Object> rules, Map<String, Object> actualPayload) {
         if (!(rules.get("moves") instanceof List<?> list) || list.isEmpty()) {
             return ValidationResult.fail("moves list is required for FIELD_MOVE");
         }
+        Set<String> presentPointers = (actualPayload == null || actualPayload.isEmpty())
+                ? null
+                : SchemaMismatchAnalyzer.flattenToPointers(actualPayload).keySet();
         for (Object o : list) {
             if (!(o instanceof Map<?, ?> m)) {
                 return ValidationResult.fail("each move must be an object with from/to");
@@ -189,8 +306,77 @@ public final class RuleValidator {
             if (from.equals(to)) {
                 return ValidationResult.fail("move from and to must differ");
             }
+            // Ground truth: a move whose source does not resolve in the payload is a
+            // fail-open no-op. Reject it so a hallucinated relocation never reaches review.
+            if (presentPointers != null && !presentPointers.contains(from)) {
+                return ValidationResult.fail(
+                        "move source '" + from + "' not found in actual payload (no-op move)");
+            }
         }
         return ValidationResult.ok();
+    }
+
+    /**
+     * Deterministic effect preview for request restructure rules: would this rule
+     * actually change the payload? {@code effective=false} with a reason lets the
+     * caller surface "this fix is a no-op against the failing payload" to the reviewer
+     * instead of presenting an ineffective suggestion that looks identical to a real
+     * one. Non-restructure types (and a null/empty payload) report effective=true
+     * (unknown -> do not penalize).
+     */
+    public record EffectPreview(boolean effective, String reason) {
+        static EffectPreview ok() { return new EffectPreview(true, null); }
+        static EffectPreview noOp(String reason) { return new EffectPreview(false, reason); }
+    }
+
+    public static EffectPreview describeEffect(Map<String, Object> rules, Map<String, Object> actualPayload) {
+        if (rules == null || rules.isEmpty() || actualPayload == null || actualPayload.isEmpty()) {
+            return EffectPreview.ok();
+        }
+        String type = str(rules.get("type")).toUpperCase();
+        Set<String> pointers = SchemaMismatchAnalyzer.flattenToPointers(actualPayload).keySet();
+        switch (type) {
+            case "FIELD_MOVE" -> {
+                if (rules.get("moves") instanceof List<?> moves) {
+                    for (Object o : moves) {
+                        if (o instanceof Map<?, ?> m) {
+                            String from = str(m.get("from"));
+                            if (!from.isBlank() && !pointers.contains(from)) {
+                                return EffectPreview.noOp("move source '" + from + "' absent from payload");
+                            }
+                        }
+                    }
+                }
+            }
+            case "FIELD_RENAME" -> {
+                if (rules.get("mappings") instanceof Map<?, ?> m) {
+                    Set<String> leaves = payloadLeafNames(actualPayload);
+                    for (Object k : m.keySet()) {
+                        String oldName = str(k);
+                        if (!oldName.isBlank() && !leaves.contains(oldName)) {
+                            return EffectPreview.noOp("rename source '" + oldName + "' absent from payload");
+                        }
+                    }
+                }
+            }
+            default -> { return EffectPreview.ok(); }
+        }
+        return EffectPreview.ok();
+    }
+
+    /**
+     * All leaf field NAMES present anywhere in the payload (last segment of each
+     * pointer). Used by FIELD_RENAME ground-truth: rename keys are flat names, not
+     * pointers, so a leaf-name match is the right granularity.
+     */
+    private static Set<String> payloadLeafNames(Map<String, Object> payload) {
+        Set<String> names = new java.util.LinkedHashSet<>();
+        for (String pointer : SchemaMismatchAnalyzer.flattenToPointers(payload).keySet()) {
+            int slash = pointer.lastIndexOf('/');
+            String leaf = slash < 0 ? pointer : pointer.substring(slash + 1);
+            names.add(leaf.replace("~1", "/").replace("~0", "~"));
+        }
+        return names;
     }
 
     /**

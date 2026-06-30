@@ -304,4 +304,124 @@ class RuleValidatorTest {
                 "unwrapArrays", List.of(Map.of("path", "/authorization")));
         assertFalse(validate(rules).deployable());
     }
+
+    // ── Ground-truth pointer validation (FIELD_MOVE / FIELD_RENAME) ───────────
+
+    @Test
+    void rejectsMoveWhoseSourceIsAbsentFromPayload() {
+        // The reported bug: model proposes moving a field that does not exist in the
+        // payload (it was renamed away) — a fail-open no-op that must be rejected.
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_MOVE",
+                "moves", List.of(Map.of("from", "/obj_id/item_id/tag_sent", "to", "/tag_sent")));
+        Map<String, Object> payload = Map.of(
+                "obj_id", Map.of("item_id", Map.of("transmission_id", "TXN-1")));
+        var result = RuleValidator.validate(rules, null, List.of(), payload);
+        assertFalse(result.deployable());
+        assertTrue(result.reason().contains("not found in actual payload"));
+    }
+
+    @Test
+    void allowsMoveWhoseSourceExistsInPayload() {
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_MOVE",
+                "moves", List.of(Map.of("from", "/obj_id/item_id/tag_sent", "to", "/tag_sent")));
+        Map<String, Object> payload = Map.of(
+                "obj_id", Map.of("item_id", Map.of("tag_sent", "TXN-1")));
+        assertTrue(RuleValidator.validate(rules, null, List.of(), payload).deployable());
+    }
+
+    @Test
+    void rejectsRenameWhoseSourceIsAbsentFromPayload() {
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_RENAME",
+                "mappings", Map.of("tag_sent", "transmission_id"));
+        Map<String, Object> payload = Map.of("transmission_id", "TXN-1");
+        var result = RuleValidator.validate(rules, null, List.of(), payload);
+        assertFalse(result.deployable());
+        assertTrue(result.reason().contains("no-op rename"));
+    }
+
+    @Test
+    void allowsRenameWhoseSourceExistsInPayload() {
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_RENAME",
+                "mappings", Map.of("transmission_id", "tag_sent"));
+        Map<String, Object> payload = Map.of("transmission_id", "TXN-1");
+        assertTrue(RuleValidator.validate(rules, null, List.of(), payload).deployable());
+    }
+
+    @Test
+    void groundTruthCheckSkippedWhenPayloadNull() {
+        // 3-arg overload (no payload) keeps the legacy shape: syntax-only.
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_MOVE",
+                "moves", List.of(Map.of("from", "/nope/missing", "to", "/x")));
+        assertTrue(validate(rules).deployable());
+    }
+
+    // ── Context-prefix normalization (repair leaked wrapper pointers) ─────────
+
+    @Test
+    void stripsLeakedContextPrefixFromMovePointers() {
+        Map<String, Object> rules = new java.util.HashMap<>();
+        rules.put("type", "FIELD_MOVE");
+        rules.put("moves", List.of(new java.util.HashMap<>(Map.of(
+                "from", "/actualRequestPayload/obj_id/tag_sent",
+                "to", "/tag_sent"))));
+        int repaired = RuleValidator.normalizeContextPointers(rules);
+        assertEquals(1, repaired);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> move = ((List<Map<String, Object>>) rules.get("moves")).get(0);
+        assertEquals("/obj_id/tag_sent", move.get("from"));
+        assertEquals("/tag_sent", move.get("to"));
+    }
+
+    @Test
+    void leavesCleanPointersUntouched() {
+        Map<String, Object> rules = new java.util.HashMap<>();
+        rules.put("type", "FIELD_MOVE");
+        rules.put("moves", List.of(new java.util.HashMap<>(Map.of(
+                "from", "/credentials/token", "to", "/token"))));
+        assertEquals(0, RuleValidator.normalizeContextPointers(rules));
+    }
+
+    @Test
+    void stripContextPrefixOnlyAffectsFirstSegment() {
+        // a legitimate nested field named 'schema' deeper in the tree is preserved
+        assertEquals("/a/schema/b", RuleValidator.stripContextPrefix("/a/schema/b"));
+        assertEquals("/obj_id/tag", RuleValidator.stripContextPrefix("/actualRequestPayload/obj_id/tag"));
+    }
+
+    // ── Effect preview (item 4: deterministic no-op detection) ────────────────
+
+    @Test
+    void describeEffectFlagsNoOpMove() {
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_MOVE",
+                "moves", List.of(Map.of("from", "/obj_id/item_id/tag_sent", "to", "/tag_sent")));
+        Map<String, Object> payload = Map.of(
+                "obj_id", Map.of("item_id", Map.of("transmission_id", "TXN-1")));
+        var effect = RuleValidator.describeEffect(rules, payload);
+        assertFalse(effect.effective());
+        assertTrue(effect.reason().contains("absent from payload"));
+    }
+
+    @Test
+    void describeEffectReportsEffectiveForResolvableMove() {
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_MOVE",
+                "moves", List.of(Map.of("from", "/obj_id/item_id/tag_sent", "to", "/tag_sent")));
+        Map<String, Object> payload = Map.of(
+                "obj_id", Map.of("item_id", Map.of("tag_sent", "TXN-1")));
+        assertTrue(RuleValidator.describeEffect(rules, payload).effective());
+    }
+
+    @Test
+    void describeEffectIsNeutralWithoutPayload() {
+        var rules = Map.<String, Object>of(
+                "type", "FIELD_MOVE",
+                "moves", List.of(Map.of("from", "/x", "to", "/y")));
+        assertTrue(RuleValidator.describeEffect(rules, null).effective());
+    }
 }
