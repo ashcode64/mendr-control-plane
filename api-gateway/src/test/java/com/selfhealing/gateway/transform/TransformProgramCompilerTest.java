@@ -22,6 +22,29 @@ class TransformProgramCompilerTest {
     }
 
     @Test
+    void dslProgramCompileRequest_preservesOpInOpsBucket() {
+        TransformationRule rule = TransformationRule.builder()
+                .ruleType(TransformationRule.RuleType.DSL_PROGRAM)
+                .ruleDefinition(Map.of(
+                        "schemaVersion", "mendrscript/v1",
+                        "ops", List.of(
+                                Map.of("op", "rename",
+                                        "from", "/obj_id/item_id/transmission_id",
+                                        "to", "/obj_id/item_id/tag_sent"),
+                                Map.of("op", "move",
+                                        "from", "/obj_id/item_id/tag_sent",
+                                        "to", "/tag_sent"))))
+                .build();
+
+        TransformProgram program = compiler.compileRequest(List.of(rule));
+
+        assertThat(program.getSchemaVersion()).isEqualTo("v2");
+        assertThat(program.getOps()).hasSize(2);
+        assertThat(program.getOps().get(0)).containsEntry("op", "rename");
+        assertThat(program.getOps().get(1)).containsEntry("op", "move");
+    }
+
+    @Test
     void conflictingRenamesOfSameSourceThrow() {
         // two approved rules disagree on what 'amount' becomes — must not silently
         // last-write-wins (plan §4.10)

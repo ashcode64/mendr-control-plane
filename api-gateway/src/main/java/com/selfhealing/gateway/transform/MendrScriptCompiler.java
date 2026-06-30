@@ -1,5 +1,6 @@
 package com.selfhealing.gateway.transform;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.gateway.transform.dsl.MendrProgram;
@@ -21,6 +22,7 @@ import java.util.Map;
 @Component
 public class MendrScriptCompiler {
 
+    private static final TypeReference<List<Op>> OP_LIST_TYPE = new TypeReference<>() {};
     private static final TypeReference<List<Map<String, Object>>> OPS_TYPE = new TypeReference<>() {};
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {};
 
@@ -43,12 +45,23 @@ public class MendrScriptCompiler {
         if (program == null || program.ops() == null || program.ops().isEmpty()) {
             return List.of();
         }
-        return objectMapper.convertValue(program.ops(), OPS_TYPE);
+        try {
+            // Type-aware write: convertValue(List<Op>, …) erases generics and drops @JsonTypeInfo "op".
+            String json = objectMapper.writerFor(OP_LIST_TYPE).writeValueAsString(program.ops());
+            return objectMapper.readValue(json, OPS_TYPE);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize MendrScript ops", e);
+        }
     }
 
     /** Serialize a single op to its plain-JSON form. */
     public Map<String, Object> toSnapshotOp(Op op) {
-        return objectMapper.convertValue(op, MAP_TYPE);
+        try {
+            String json = objectMapper.writerFor(Op.class).writeValueAsString(op);
+            return objectMapper.readValue(json, MAP_TYPE);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize MendrScript op", e);
+        }
     }
 
     /**
