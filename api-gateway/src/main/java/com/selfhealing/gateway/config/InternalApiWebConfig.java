@@ -16,8 +16,13 @@ public class InternalApiWebConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
+        // Shared internal key guards the machine-to-machine internal API
+        // (MendrScript verify/simulate). The edge sync (/v1/sync/**) authenticates
+        // per-tenant via a tenant API key through Spring Security (SecurityConfig +
+        // ApiKeyAuthenticationFilter), so the sync payload is tenant-scoped — it is
+        // intentionally NOT guarded by the shared key here.
         registry.addInterceptor(new InternalApiKeyInterceptor(internalProperties))
-                .addPathPatterns("/api/internal/**", "/v1/sync/**");
+                .addPathPatterns("/api/internal/**");
     }
 
     @RequiredArgsConstructor

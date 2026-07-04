@@ -40,8 +40,16 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(registry -> {
-                    registry.requestMatchers("/actuator/**", "/health").permitAll();
+                    // Always public: health/actuator and the shared-key internal API
+                    // (verify/simulate) — the latter presents X-Internal-Api-Key, which
+                    // is not a Spring Security credential; it is guarded separately by
+                    // InternalApiWebConfig's InternalApiKeyInterceptor. Leaving it under
+                    // anyRequest().authenticated() would 401 the ai-analysis verifier
+                    // calls when enforcement is on.
+                    registry.requestMatchers("/actuator/**", "/health", "/api/internal/**").permitAll();
                     if (authProperties.isEnforce()) {
+                        // Everything else (dashboard /api/**, edge /v1/sync/**) must
+                        // present a valid WorkOS JWT or a per-tenant API key.
                         registry.anyRequest().authenticated();
                     } else {
                         registry.anyRequest().permitAll();
