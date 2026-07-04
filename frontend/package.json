@@ -3,14 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1",
-    "react-router-dom": "^6.20.0",
-    "recharts": "^2.8.0",
+    "@workos-inc/authkit-react": "^0.16.1",
     "axios": "^1.6.0",
     "date-fns": "^2.30.0",
-    "react-hot-toast": "^2.4.1"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.20.0",
+    "react-scripts": "5.0.1",
+    "recharts": "^2.8.0"
   },
   "scripts": {
     "start": "react-scripts start",
@@ -18,8 +19,15 @@
     "test": "react-scripts test"
   },
   "browserslist": {
-    "production": [">0.2%", "not dead", "not op_mini all"],
-    "development": ["last 1 chrome version", "last 1 firefox version"]
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version"
+    ]
   },
   "proxy": "http://localhost:8080"
 }

@@ -1,15 +1,32 @@
 import axios from 'axios';
+import { getAccessToken, handleUnauthorized } from '../auth/tokenBridge';
 
 const gateway = axios.create({ baseURL: '/api/gateway', timeout: 10000 });
 const analysis = axios.create({ baseURL: '/api/analysis', timeout: 10000 });
 const rules = axios.create({ baseURL: '/api/rules', timeout: 10000 });
 const services = axios.create({ baseURL: '/api/services', timeout: 10000 });
 
-// Add response interceptor for error normalisation
+// Attach the WorkOS bearer token (when a session exists) to every API call so the
+// backend can authenticate the caller and resolve the tenant from the org claim.
+[gateway, analysis, rules, services].forEach(client => {
+  client.interceptors.request.use(async config => {
+    const token = await getAccessToken();
+    if (token) {
+      config.headers = config.headers || {};
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  });
+});
+
+// Response interceptor: normalise errors and redirect to login on 401.
 [gateway, analysis, rules, services].forEach(client => {
   client.interceptors.response.use(
     r => r,
     err => {
+      if (err.response?.status === 401) {
+        handleUnauthorized();
+      }
       const data = err.response?.data;
       const msg = data?.message
         || (Array.isArray(data?.errors) && data.errors.length ? data.errors.join('; ') : null)
@@ -108,12 +125,20 @@ export const api = {
     const controller = new AbortController();
     (async () => {
       try {
+        const headers = { 'Content-Type': 'application/json' };
+        const token = await getAccessToken();
+        if (token) headers.Authorization = `Bearer ${token}`;
         const resp = await fetch('/api/chat/stream', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           body: JSON.stringify({ sessionId, message, context, cases }),
           signal: controller.signal,
         });
+        if (resp.status === 401) {
+          handleUnauthorized();
+          onEvent('error', { message: 'Unauthorized' });
+          return;
+        }
         if (!resp.ok || !resp.body) {
           onEvent('error', { message: `HTTP ${resp.status}` });
           return;
