@@ -13,7 +13,9 @@ import re
 PROTECTED_FIELDS = ("authorization", "x-api-key", "credit_card_number", "internal_routing_id")
 
 _INJECTION_PATTERNS = [
-    re.compile(r"ignore (all|previous|prior) instructions", re.I),
+    # Matches the canonical variants: "ignore previous instructions",
+    # "ignore all previous instructions", "ignore the above instructions", etc.
+    re.compile(r"ignore\s+(all|any|the|previous|prior|earlier|above).{0,30}instructions", re.I),
     re.compile(r"disregard (the )?(system|rules|guardrails)", re.I),
     re.compile(r"you are now", re.I),
     re.compile(r"(reveal|print|show).{0,20}(system prompt|instructions)", re.I),
