@@ -3,8 +3,9 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: selfhealing
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: secret
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-admin}
+      # Superuser password. Override in every non-dev environment via .env / secrets.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
     ports:
       - "5432:5432"
     volumes:
@@ -98,6 +99,9 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # Require the internal key on /mcp + mutating /api/analysis; lock browser CORS.
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -114,6 +118,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
       MAX_REFINE_ITERATIONS: "3"
+      # Auth + tenant propagation to the MCP surface, CORS lockdown, abuse controls.
+      GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
+      MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      MENDR_CHAT_RATE_LIMIT_PER_MIN: ${MENDR_CHAT_RATE_LIMIT_PER_MIN:-20}
     depends_on:
       ai-analysis-service:
         condition: service_started
