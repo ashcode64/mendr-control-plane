@@ -8,9 +8,12 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.util.Base64;
 import java.util.HexFormat;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Verifies presented API keys. Keys have the form {@code <prefix>.<secret>}.
@@ -21,7 +24,43 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class ApiKeyService {
 
+    private static final SecureRandom RANDOM = new SecureRandom();
+    private static final Base64.Encoder B64 = Base64.getUrlEncoder().withoutPadding();
+
     private final ApiKeyRepository apiKeyRepository;
+
+    /** The raw key ({@code <prefix>.<secret>}) returned ONCE at issuance time. */
+    public record IssuedKey(ApiKey stored, String plaintext) {}
+
+    /**
+     * Issue a new per-tenant API key. The high-entropy secret is returned ONCE and
+     * only its sha256 hash is persisted (raw secret is never stored). Callers must
+     * surface {@link IssuedKey#plaintext()} to the operator immediately and discard it.
+     */
+    public IssuedKey issue(UUID tenantId, String name, UUID createdBy, LocalDateTime expiresAt) {
+        if (tenantId == null) {
+            throw new IllegalArgumentException("tenantId is required");
+        }
+        String prefix = "mendr_" + randomToken(9);
+        String secret = randomToken(32);
+        ApiKey key = ApiKey.builder()
+                .tenantId(tenantId)
+                .name(name)
+                .keyPrefix(prefix)
+                .keyHash(sha256Hex(secret))
+                .createdBy(createdBy)
+                .expiresAt(expiresAt)
+                .createdAt(LocalDateTime.now())
+                .build();
+        ApiKey saved = apiKeyRepository.save(key);
+        return new IssuedKey(saved, prefix + "." + secret);
+    }
+
+    private static String randomToken(int bytes) {
+        byte[] buf = new byte[bytes];
+        RANDOM.nextBytes(buf);
+        return B64.encodeToString(buf);
+    }
 
     public Optional<ApiKey> authenticate(String presented) {
         if (presented == null || presented.isBlank()) {
