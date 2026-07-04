@@ -1,8 +1,0 @@
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/NotificationServiceApplication.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/tenant/TenantRecordInterceptor.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/kafka/AnalysisResultConsumer.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/tenant/TenantContext.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/tenant/MultiTenancyProperties.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/tenant/TenantKafkaConfig.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/tenant/DataSourceConfig.java
-/Users/somandal/Desktop/personale/service py/mendr-control-plane/notification-service/src/main/java/com/selfhealing/notification/tenant/TenantAwareDataSource.java

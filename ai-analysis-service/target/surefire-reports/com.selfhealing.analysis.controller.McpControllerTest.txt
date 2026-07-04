@@ -1,4 +1,0 @@
--------------------------------------------------------------------------------
-Test set: com.selfhealing.analysis.controller.McpControllerTest
--------------------------------------------------------------------------------
-Tests run: 5, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.554 s -- in com.selfhealing.analysis.controller.McpControllerTest
