@@ -3,13 +3,13 @@ import { useAuth } from '@workos-inc/authkit-react';
 import { AUTH_ENABLED } from './tokenBridge';
 
 function Menu() {
-  const { user, signOut } = useAuth();
+  const { user, organizationId, signOut } = useAuth();
   if (!user) return null;
   const label = user.email || user.firstName || 'Account';
   return (
     <div style={s.wrap}>
       <div style={s.email} title={label}>{label}</div>
-      {user.organizationId && <div style={s.org}>org: {String(user.organizationId).slice(0, 12)}…</div>}
+      {organizationId && <div style={s.org}>org: {String(organizationId).slice(0, 12)}…</div>}
       <button style={s.btn} onClick={() => signOut()}>Sign out</button>
     </div>
   );

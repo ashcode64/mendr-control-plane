@@ -17,6 +17,7 @@ tenant so RLS-scoped reads via MCP are correct (OWASP LLM06: complete mediation)
 """
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -24,6 +25,8 @@ from typing import Optional
 from fastapi import Header, HTTPException, Request
 
 from .config import settings
+
+log = logging.getLogger("conversation-engine.auth")
 
 try:  # JWKS validation is only needed when a WorkOS JWKS URI is configured.
     from jose import jwt as jose_jwt
@@ -85,7 +88,14 @@ async def _tenant_from_jwt(token: str) -> Optional[str]:
             options=options,
         )
     except JWTError as e:
-        raise HTTPException(status_code=401, detail=f"invalid token: {e}") from e
+        # Under enforcement an invalid token is a hard failure. During the safe
+        # rollout (enforce=false) we must not break existing callers, so a bad or
+        # stale token is treated as "no credential" and falls through to the
+        # default tenant rather than rejecting the request.
+        if settings.auth_enforce:
+            raise HTTPException(status_code=401, detail=f"invalid token: {e}") from e
+        log.warning("ignoring invalid bearer token (enforce=off): %s", e)
+        return None
     org_id = claims.get(settings.workos_org_claim)
     if not org_id:
         return None
