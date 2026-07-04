@@ -99,8 +99,12 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
-      # Require the internal key on /mcp + mutating /api/analysis; lock browser CORS.
+      # Auth: WorkOS JWT for the dashboard (/api/analysis), shared internal key for /mcp.
+      # enforce=false keeps endpoints open while still binding tenant context.
       MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
       MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
@@ -157,6 +161,13 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # Auth: WorkOS JWT for the dashboard (/api/rules), shared internal key for machines.
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
+      MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy

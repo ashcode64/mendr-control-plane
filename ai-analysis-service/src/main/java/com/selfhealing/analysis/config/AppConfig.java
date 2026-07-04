@@ -5,13 +5,16 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import org.springframework.web.reactive.function.client.WebClient;
-import org.springframework.web.servlet.config.annotation.CorsRegistry;
-import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+import java.util.List;
 
 @Configuration
 @RequiredArgsConstructor
-public class AppConfig implements WebMvcConfigurer {
+public class AppConfig {
 
     private final AnalysisSecurityProperties securityProperties;
 
@@ -28,16 +31,19 @@ public class AppConfig implements WebMvcConfigurer {
     }
 
     /**
-     * CORS is restricted to the configured dashboard origins (never {@code *}). This
-     * replaces the per-controller {@code @CrossOrigin(origins = "*")} that previously
-     * allowed any site to call the analysis API from a browser.
+     * CORS is restricted to the configured dashboard origins (never {@code *}). Exposed as a
+     * {@link CorsConfigurationSource} bean so the Spring Security filter chain honours it
+     * (including preflight) — replacing the per-controller {@code @CrossOrigin(origins = "*")}
+     * that previously allowed any site to call the analysis API from a browser.
      */
-    @Override
-    public void addCorsMappings(CorsRegistry registry) {
-        var origins = securityProperties.getCorsAllowedOrigins();
-        registry.addMapping("/api/analysis/**")
-                .allowedOrigins(origins.toArray(new String[0]))
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                .allowedHeaders("*");
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration config = new CorsConfiguration();
+        config.setAllowedOrigins(securityProperties.getCorsAllowedOrigins());
+        config.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        config.setAllowedHeaders(List.of("*"));
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/api/analysis/**", config);
+        return source;
     }
 }

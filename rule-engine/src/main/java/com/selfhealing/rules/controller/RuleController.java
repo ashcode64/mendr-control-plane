@@ -16,7 +16,6 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/rules")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*")
 public class RuleController {
 
     private final JdbcTemplate jdbcTemplate;

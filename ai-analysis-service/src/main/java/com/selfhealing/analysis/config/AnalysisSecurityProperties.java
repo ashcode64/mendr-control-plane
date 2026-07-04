@@ -18,9 +18,10 @@ import java.util.List;
 public class AnalysisSecurityProperties {
 
     /**
-     * When true, {@code /mcp} and mutating {@code /api/analysis} calls require the
-     * shared internal API key. When false (default) the endpoints stay open for the
-     * incremental rollout, but the tenant is still bound from {@code X-Tenant-Id}.
+     * When true, the machine-only {@code /mcp} endpoint requires the shared internal
+     * API key. When false (default) it stays open for the incremental rollout, but the
+     * tenant is still bound from a trusted {@code X-Tenant-Id}. Dashboard-facing
+     * {@code /api/analysis} calls are authenticated with the WorkOS JWT, not this key.
      */
     private boolean enforce = false;
 
@@ -29,4 +30,17 @@ public class AnalysisSecurityProperties {
 
     /** Allowed browser origins for {@code /api/analysis} (never {@code *}). */
     private List<String> corsAllowedOrigins = List.of("http://localhost:3000");
+
+    /** Human (dashboard) auth: WorkOS JWT validated via JWKS. */
+    private final Workos workos = new Workos();
+
+    @Data
+    public static class Workos {
+        /** JWKS endpoint of the WorkOS environment. Empty disables JWT validation. */
+        private String jwksUri = "";
+        private String issuer = "";
+        private String audience = "";
+        /** JWT claim that carries the WorkOS organization id. */
+        private String orgClaim = "org_id";
+    }
 }

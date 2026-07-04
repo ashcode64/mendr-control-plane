@@ -18,17 +18,34 @@ complements [`MULTI_TENANCY.md`](MULTI_TENANCY.md) (the tenancy/RLS deep-dive).
 
 | Caller | Mechanism | Tenant resolution |
 |---|---|---|
-| Human (dashboard) | WorkOS JWT (validated via JWKS) | `org_id` claim -> `tenants.workos_org_id` |
+| Human (dashboard) | WorkOS JWT (validated via JWKS) at every service it reaches | `org_id` claim -> `tenants.workos_org_id` |
 | Edge / machine | Per-tenant API key `<prefix>.<secret>` (sha256-hashed at rest) | key row's `tenant_id` |
-| Internal service-to-service | Shared `GATEWAY_INTERNAL_API_KEY` | binds via propagated `X-Tenant-Id` |
+| Internal service-to-service | Shared `GATEWAY_INTERNAL_API_KEY` | trusted `X-Tenant-Id` (UUID or org id) |
 
-- Gateway: `SecurityConfig` (JWT resource server + `ApiKeyAuthenticationFilter`),
-  `TenantContextFilter` binds the tenant per request.
-- ai-analysis: `TenantAndInternalAuthFilter` binds the tenant from `X-Tenant-Id`
-  and enforces the internal key on `/mcp` + mutating `/api/analysis`.
+Every HTTP-serving Java service runs the **same three-layer inbound stack** so no
+service accepts an unvetted call (deliberately duplicated per service — see the
+checklist in §10):
+
+1. **OAuth2 resource server** validates the WorkOS JWT via JWKS (humans).
+2. **Internal-key filter** turns a valid `X-Internal-Api-Key` into a trusted
+   `ROLE_INTERNAL` principal (machines). This is the only principal allowed to
+   assert a tenant via `X-Tenant-Id`.
+3. **Tenant filter** binds `TenantContext` for RLS, then clears it: JWT →
+   `org_id` claim → `tenants.workos_org_id`; internal → asserted `X-Tenant-Id`
+   (UUID or org id, mapped + cached); otherwise unset (default tenant).
+
+- api-gateway: `SecurityConfig` + `ApiKeyAuthenticationFilter` (per-tenant edge
+  keys) + `TenantContextFilter`.
+- ai-analysis: `security/{SecurityConfig, InternalApiKeyAuthFilter,
+  TenantContextFilter, TenantResolver}`. `/mcp` is machine-only; `/api/analysis`
+  accepts the dashboard JWT.
+- rule-engine: same `security/*` stack; protects `/api/rules`.
 - conversation-engine: `auth.py` validates the WorkOS JWT / internal key and
-  forwards `X-Tenant-Id` to the MCP surface.
-- `/actuator/**`, `/health`, and `/api/internal/**` (shared-key guarded) stay
+  forwards the tenant to the MCP surface alongside the internal key.
+- notification-service: Kafka-only; its HTTP surface is `denyAll` by default.
+- A raw `X-Tenant-Id` from an untrusted client is never honoured (no trusted
+  principal ⇒ ignored), so it cannot be used to read another tenant.
+- `/actuator/**`, `/error`, and `/api/internal/**` (shared-key guarded) stay
   outside JWT enforcement.
 
 Enforcement is gated by `MENDR_AUTH_ENFORCE` (default `false`) for a safe
@@ -94,3 +111,28 @@ Trivy (deps + IaC misconfig), pip-audit, npm audit, and CodeQL SAST for Java.
 
 Report suspected vulnerabilities privately to the security owner; do not open a
 public issue with exploit details.
+
+## 10. New service checklist (vet every call)
+
+Any new HTTP-serving service MUST replicate the standard stack before it is added
+to the mesh (copy from `rule-engine/security/*` — we intentionally duplicate
+rather than share a library, so each service owns and can tune its own policy):
+
+1. Add `spring-boot-starter-security` + `spring-boot-starter-oauth2-resource-server`.
+2. Add `AuthProperties` (`mendr.auth.*`: `enforce`, `internal-api-key`,
+   `cors-allowed-origins`, `workos.{jwks-uri,issuer,audience,org-claim}`).
+3. Add `SecurityConfig`: stateless, CSRF off, CORS allow-list (never `*`),
+   `permitAll` `/actuator/**` + `/error`, `authenticated()` on the service's API
+   paths when `enforce=true`, `NimbusJwtDecoder` from the JWKS URI, then
+   `InternalApiKeyAuthFilter` (before) and `TenantContextFilter` (after)
+   `AuthorizationFilter`.
+4. Add `InternalApiKeyAuthFilter`, `TenantContextFilter`, `TenantResolver`
+   (org id -> tenant UUID via the `tenants` registry, cached).
+5. Remove any `@CrossOrigin("*")`; lock `management.endpoints` to `health,info`.
+6. Wire `MENDR_AUTH_*`, `GATEWAY_INTERNAL_API_KEY`, `MENDR_CORS_ALLOWED_ORIGINS`
+   in `docker-compose.yml`.
+7. Add filter tests: JWT `org_id` binds the mapped tenant; a valid internal key is
+   trusted; a forged `X-Tenant-Id` without a principal is ignored.
+
+Kafka-only services (no intended HTTP API, e.g. `notification-service`) instead
+ship a `denyAll` `SecurityConfig` so they fail closed.

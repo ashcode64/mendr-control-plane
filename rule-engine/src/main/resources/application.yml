@@ -36,7 +36,25 @@ mendr:
   tenancy:
     default-tenant-id: 00000000-0000-0000-0000-000000000001
     fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}
+  auth:
+    # When true, /api/rules requires a valid credential (WorkOS JWT for the dashboard,
+    # shared internal key for machines). When false, endpoints stay open but the tenant is
+    # still bound from any credential present (safe incremental rollout).
+    enforce: ${MENDR_AUTH_ENFORCE:false}
+    internal-api-key: ${GATEWAY_INTERNAL_API_KEY:}
+    cors-allowed-origins: ${MENDR_CORS_ALLOWED_ORIGINS:http://localhost:3000}
+    workos:
+      jwks-uri: ${MENDR_AUTH_WORKOS_JWKS_URI:}
+      issuer: ${MENDR_AUTH_WORKOS_ISSUER:}
+      audience: ${MENDR_AUTH_WORKOS_AUDIENCE:}
+      org-claim: ${MENDR_AUTH_WORKOS_ORG_CLAIM:org_id}
 
 rules:
   default-ttl-hours: 48
   route-changed-channel: route-changed
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
