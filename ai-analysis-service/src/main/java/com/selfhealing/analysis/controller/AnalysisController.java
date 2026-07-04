@@ -97,14 +97,20 @@ public class AnalysisController {
             // Provenance / audit row: verbatim AST + signature + verification proof + diffs.
             UUID programId = UUID.randomUUID();
             try {
+                // Stamp tenant_id from the bound context (falls back to default tenant on
+                // single-tenant deployments). Required under RLS: the column default alone
+                // would stamp the default tenant and be rejected by the WITH CHECK policy on
+                // a non-default connection.
                 jdbcTemplate.update("""
                     INSERT INTO transform_programs
-                        (id, analysis_id, supersedes_analysis_id, conversation_id, model, schema_version,
+                        (id, tenant_id, analysis_id, supersedes_analysis_id, conversation_id, model, schema_version,
                          ast, signature, verification, example_diffs, status, created_by, created_at)
-                    VALUES (?::uuid, ?::uuid, ?::uuid, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb,
+                    VALUES (?::uuid, ?::uuid, ?::uuid, ?::uuid, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb,
                             'PROPOSED', ?, NOW())
                     """,
-                    programId.toString(), id.toString(), id.toString(), conversationId, model, schemaVersion,
+                    programId.toString(),
+                    com.selfhealing.analysis.tenant.TenantContext.currentOrDefault().toString(),
+                    id.toString(), id.toString(), conversationId, model, schemaVersion,
                     json(program), json(signature), json(verification), json(simulation),
                     conversationId == null ? "conversation-engine" : conversationId);
             } catch (Exception e) {

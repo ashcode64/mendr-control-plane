@@ -139,6 +139,7 @@ DECLARE
     t            TEXT;
     scoped_tables TEXT[] := ARRAY[
         'services','api_failures','analysis_results','transformation_rules',
+        'transform_programs',
         'approval_workflow','platform_metrics','routing_rules','cors_rules',
         'origin_override_rules','dns_probe_log','service_contracts','service_routes',
         'response_transformation_rules','route_program','route_program_history',
