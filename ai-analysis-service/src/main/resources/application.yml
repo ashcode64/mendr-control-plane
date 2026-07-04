@@ -32,6 +32,17 @@ mendr:
   tenancy:
     default-tenant-id: 00000000-0000-0000-0000-000000000001
     fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}
+  analysis:
+    security:
+      # Require the shared internal key on /mcp and mutating /api/analysis calls.
+      enforce: ${MENDR_AUTH_ENFORCE:false}
+      internal-api-key: ${GATEWAY_INTERNAL_API_KEY:}
+      cors-allowed-origins: ${MENDR_CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
+# Shared internal key used by MendrScriptGatewayClient when calling the gateway verifier.
+gateway:
+  internal:
+    api-key: ${GATEWAY_INTERNAL_API_KEY:}
 
 anthropic:
   api-key: ${ANTHROPIC_API_KEY:}
