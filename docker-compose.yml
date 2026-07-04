@@ -10,6 +10,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Runs after init.sql ("init_v2_*" sorts after "init.sql"): multi-tenancy + RLS + app_user
+      - ./infra/init_v2_multitenancy.sql:/docker-entrypoint-initdb.d/init_v2_multitenancy.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s
@@ -62,14 +64,20 @@ services:
     environment:
       SERVER_PORT: 8080
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      # Non-superuser role so Postgres RLS is actually enforced (superusers bypass it).
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SERVICES_AI_ANALYSIS: http://ai-analysis-service:8082
       SERVICES_RULE_ENGINE: http://rule-engine:8084
       MENDR_DOCKER_HOST_REWRITE: host.docker.internal
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # Auth (off by default for incremental rollout). Set JWKS URI to enable WorkOS JWT.
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,8 +93,8 @@ services:
       - "8082:8082"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
@@ -117,8 +125,8 @@ services:
       - "8083:8083"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
       postgres:
@@ -133,8 +141,8 @@ services:
       - "8084:8084"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:

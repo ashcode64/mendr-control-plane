@@ -1,5 +1,6 @@
 package com.selfhealing.gateway.model;
 
+import com.selfhealing.gateway.tenant.TenantScoped;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -14,12 +15,16 @@ import java.util.UUID;
  */
 @Entity
 @Table(name = "service_routes")
+@EntityListeners(com.selfhealing.gateway.tenant.TenantEntityListener.class)
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
-public class ServiceRoute {
+public class ServiceRoute implements TenantScoped {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
+
+    @Column(name = "tenant_id")
+    private UUID tenantId;
 
     @Column(name = "source_service", nullable = false)
     private String sourceService;

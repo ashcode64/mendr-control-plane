@@ -38,6 +38,10 @@ class RouteConfigSnapshotPublisherTest {
     private RouteConfigSnapshotPublisher publisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Physical Redis keys are namespaced per tenant; with no bound context the
+    // publisher falls back to the default tenant.
+    private static final String TENANT_NS = "t:00000000-0000-0000-0000-000000000001:";
+
     @BeforeEach
     void setUp() {
         GatewayInternalProperties internalProperties = new GatewayInternalProperties();
@@ -85,7 +89,7 @@ class RouteConfigSnapshotPublisherTest {
 
         ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
         verify(valueOperations).set(
-                eq("mendr:routeconfig:order-service:payment-service:/api/payments/process"),
+                eq(TENANT_NS + "mendr:routeconfig:order-service:payment-service:/api/payments/process"),
                 jsonCaptor.capture());
 
         JsonNode root = objectMapper.readTree(jsonCaptor.getValue());
@@ -128,7 +132,7 @@ class RouteConfigSnapshotPublisherTest {
 
         ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
         verify(valueOperations).set(eq(
-                "mendr:routeconfig:order-service:payment-service:/api/payments/process"),
+                TENANT_NS + "mendr:routeconfig:order-service:payment-service:/api/payments/process"),
                 jsonCaptor.capture());
 
         JsonNode root = objectMapper.readTree(jsonCaptor.getValue());
@@ -205,7 +209,7 @@ class RouteConfigSnapshotPublisherTest {
 
         ArgumentCaptor<String> jsonCaptor = ArgumentCaptor.forClass(String.class);
         verify(valueOperations).set(
-                eq("mendr:routeconfig:order-service:payment-service:/api/payments/process"),
+                eq(TENANT_NS + "mendr:routeconfig:order-service:payment-service:/api/payments/process"),
                 jsonCaptor.capture());
 
         JsonNode root = objectMapper.readTree(jsonCaptor.getValue());
@@ -235,10 +239,11 @@ class RouteConfigSnapshotPublisherTest {
                         .hasResponseContract(false)
                         .build());
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
-        when(valueOperations.get(eq("mendr:routeconfig:sync-version"))).thenReturn("3");
+        when(valueOperations.get(eq(TENANT_NS + "mendr:routeconfig:sync-version"))).thenReturn("3");
 
         var payload = publisher.buildFullSyncPayload();
 
+        // The logical route map key (what the edge consumes) stays un-namespaced.
         assertThat(payload.getRoutes())
                 .containsKey("mendr:routeconfig:order-service:payment-service:/api/payments/charge");
     }

@@ -1,5 +1,6 @@
 package com.selfhealing.gateway.model;
 
+import com.selfhealing.gateway.tenant.TenantScoped;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.JdbcTypeCode;
@@ -25,8 +26,12 @@ import java.util.UUID;
 @Entity
 @Table(name = "route_program")
 @IdClass(RouteProgram.RouteKey.class)
+@EntityListeners(com.selfhealing.gateway.tenant.TenantEntityListener.class)
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
-public class RouteProgram {
+public class RouteProgram implements TenantScoped {
+
+    @Column(name = "tenant_id")
+    private UUID tenantId;
 
     @Id
     @Column(name = "source_service", nullable = false)

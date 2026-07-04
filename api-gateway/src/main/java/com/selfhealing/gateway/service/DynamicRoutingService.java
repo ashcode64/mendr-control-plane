@@ -7,7 +7,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -39,7 +38,7 @@ public class DynamicRoutingService {
      * Priority: Redis route cache > active RoutingRule > Mendr services registry > hostname fallback
      */
     public String resolveUrl(String serviceName) {
-        String cacheKey = ROUTE_KEY_PREFIX + serviceName;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(ROUTE_KEY_PREFIX + serviceName);
         Object cached = redisTemplate.opsForValue().get(cacheKey);
         if (cached != null) {
             String cachedUrl = normalizeWithRegistry(serviceName, cached.toString());
@@ -116,7 +115,7 @@ public class DynamicRoutingService {
 
         // Update Redis immediately — cache miss avoided for all subsequent requests
         evictRouteCache(serviceName);
-        String cacheKey = ROUTE_KEY_PREFIX + serviceName;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(ROUTE_KEY_PREFIX + serviceName);
         redisTemplate.opsForValue().set(cacheKey, newUrl, ttlHours, TimeUnit.HOURS);
 
         // Update the services table so other lookups stay consistent
@@ -126,9 +125,10 @@ public class DynamicRoutingService {
 
         // Audit
         jdbcTemplate.update("""
-            INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-            VALUES ('ROUTING_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
+            INSERT INTO audit_log (tenant_id, entity_type, entity_id, action, actor, details)
+            VALUES (?, 'ROUTING_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
             """,
+            com.selfhealing.gateway.tenant.TenantContext.currentOrDefault(),
             rule.getId().toString(), approvedBy,
             String.format("{\"service\":\"%s\",\"from\":\"%s\",\"to\":\"%s\",\"ttlHours\":%d}",
                 serviceName, originalUrl, newUrl, ttlHours));
@@ -139,13 +139,18 @@ public class DynamicRoutingService {
     }
 
     public void evictRouteCache(String serviceName) {
-        redisTemplate.delete(ROUTE_KEY_PREFIX + serviceName);
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(ROUTE_KEY_PREFIX + serviceName));
         routeChangedPublisher.publishTargetService(serviceName);
     }
 
-    /** Scheduled expiry check every 5 minutes */
-    @Scheduled(fixedDelay = 300_000)
-    public void expireRoutingRules() {
+    /**
+     * Expire TTL-based routing rules for the current tenant context, reverting
+     * each service to its original URL and republishing. Scheduling is owned by
+     * {@link RuleExpirySweeper}.
+     *
+     * @return number of rules expired
+     */
+    public int expireRoutingRules() {
         List<RoutingRule> expired = routingRuleRepository
             .findAllByIsActiveTrueAndExpiresAtBefore(LocalDateTime.now());
 
@@ -165,6 +170,7 @@ public class DynamicRoutingService {
         if (!expired.isEmpty()) {
             log.info("Expired {} routing rules", expired.size());
         }
+        return expired.size();
     }
 
     /** Active, non-expired rules only — matches schema rules /active listing behavior. */

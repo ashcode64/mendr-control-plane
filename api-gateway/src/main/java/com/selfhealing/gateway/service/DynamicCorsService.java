@@ -52,7 +52,8 @@ public class DynamicCorsService {
         if (origin == null || origin.isBlank()) return false;
 
         // 1. Redis hot-path
-        String cacheKey = CORS_KEY_PREFIX + targetService + ":" + origin;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CORS_KEY_PREFIX + targetService + ":" + origin);
         Boolean cached = (Boolean) redisTemplate.opsForValue().get(cacheKey);
         if (cached != null) return cached;
 
@@ -118,14 +119,16 @@ public class DynamicCorsService {
         routeChangedPublisher.publishTargetService(targetService);
 
         // Warm Redis immediately
-        String cacheKey = CORS_KEY_PREFIX + targetService + ":" + newOrigin;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CORS_KEY_PREFIX + targetService + ":" + newOrigin);
         redisTemplate.opsForValue().set(cacheKey, true, ttlHours, TimeUnit.HOURS);
 
         // Audit
         jdbcTemplate.update("""
-            INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-            VALUES ('CORS_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
+            INSERT INTO audit_log (tenant_id, entity_type, entity_id, action, actor, details)
+            VALUES (?, 'CORS_RULE', ?::uuid, 'DEPLOYED', ?, ?::jsonb)
             """,
+            com.selfhealing.gateway.tenant.TenantContext.currentOrDefault(),
             rule.getId().toString(), approvedBy,
             String.format("{\"targetService\":\"%s\",\"origin\":\"%s\",\"ttlHours\":%d}",
                 targetService, newOrigin, ttlHours));
@@ -135,7 +138,8 @@ public class DynamicCorsService {
     }
 
     public void evictCorsCache(String targetService, String origin) {
-        redisTemplate.delete(CORS_KEY_PREFIX + targetService + ":" + origin);
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CORS_KEY_PREFIX + targetService + ":" + origin));
         routeChangedPublisher.publishTargetService(targetService);
     }
 
@@ -187,7 +191,8 @@ public class DynamicCorsService {
             if (!desired.contains(rule.getAllowedOrigin())) {
                 rule.setActive(false);
                 corsRuleRepository.save(rule);
-                redisTemplate.delete(CORS_KEY_PREFIX + targetService + ":" + rule.getAllowedOrigin());
+                redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                        CORS_KEY_PREFIX + targetService + ":" + rule.getAllowedOrigin()));
                 deactivated = true;
                 log.info("CORS registration rule removed: {} origin {}", targetService, rule.getAllowedOrigin());
             }

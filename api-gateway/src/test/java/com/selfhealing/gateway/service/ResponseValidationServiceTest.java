@@ -54,7 +54,7 @@ class ResponseValidationServiceTest {
                 .rawResponse(Map.of("status", "ok"))
                 .build();
 
-        when(stringRedisTemplate.hasKey("mendr:validate-dedup:order-service:payment-service:/api/payments/process"))
+        when(stringRedisTemplate.hasKey("t:00000000-0000-0000-0000-000000000001:mendr:validate-dedup:order-service:payment-service:/api/payments/process"))
                 .thenReturn(false);
         when(responseValidator.validate("order-service", "payment-service", "/api/payments/process",
                 request.getTransformedResponse()))
@@ -76,7 +76,7 @@ class ResponseValidationServiceTest {
         assertThat(outcome.status()).isEqualTo("mismatch");
         assertThat(outcome.failureId()).isEqualTo(failureId);
         verify(valueOperations).set(
-                eq("mendr:validate-dedup:order-service:payment-service:/api/payments/process"),
+                eq("t:00000000-0000-0000-0000-000000000001:mendr:validate-dedup:order-service:payment-service:/api/payments/process"),
                 eq("1"),
                 eq(Duration.ofSeconds(60)));
     }
@@ -90,7 +90,7 @@ class ResponseValidationServiceTest {
                 .transformedResponse(Map.of("status", "bad"))
                 .build();
 
-        when(stringRedisTemplate.hasKey("mendr:validate-dedup:order-service:payment-service:/api/payments/process"))
+        when(stringRedisTemplate.hasKey("t:00000000-0000-0000-0000-000000000001:mendr:validate-dedup:order-service:payment-service:/api/payments/process"))
                 .thenReturn(true);
 
         var outcome = responseValidationService.validate(request);

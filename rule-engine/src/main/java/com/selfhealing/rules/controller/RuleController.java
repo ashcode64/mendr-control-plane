@@ -61,9 +61,9 @@ public class RuleController {
         if (updated == 0) return ResponseEntity.notFound().build();
 
         jdbcTemplate.update("""
-                INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-                VALUES ('TRANSFORMATION_RULE', ?::uuid, 'DISABLED', ?, '{}')
-                """, id.toString(), actor);
+                INSERT INTO audit_log (tenant_id, entity_type, entity_id, action, actor, details)
+                VALUES (?, 'TRANSFORMATION_RULE', ?::uuid, 'DISABLED', ?, '{}')
+                """, com.selfhealing.rules.tenant.TenantContext.currentOrDefault(), id.toString(), actor);
 
         // Disabling a single rule must recompile the route's merged program from
         // whatever rules REMAIN active — it can only shrink this rule's

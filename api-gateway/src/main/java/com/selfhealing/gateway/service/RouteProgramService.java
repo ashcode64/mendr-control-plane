@@ -219,24 +219,27 @@ public class RouteProgramService {
         }
         UUID[] reqIds = rp.getRequestRuleIds() == null ? new UUID[0] : rp.getRequestRuleIds().toArray(new UUID[0]);
         UUID[] respIds = rp.getResponseRuleIds() == null ? new UUID[0] : rp.getResponseRuleIds().toArray(new UUID[0]);
+        UUID tenantId = rp.getTenantId() != null
+                ? rp.getTenantId() : com.selfhealing.gateway.tenant.TenantContext.currentOrDefault();
         jdbcTemplate.update(con -> {
             var ps = con.prepareStatement("""
                     INSERT INTO route_program_history
-                        (source_service, target_service, endpoint, request_program, response_program,
+                        (tenant_id, source_service, target_service, endpoint, request_program, response_program,
                          request_rule_ids, response_rule_ids, program_hash, version, compiled_by, compiled_at)
-                    VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?)
                     """);
-            ps.setString(1, rp.getSourceService());
-            ps.setString(2, rp.getTargetService());
-            ps.setString(3, rp.getEndpoint());
-            ps.setString(4, reqJson);
-            ps.setString(5, respJson);
-            ps.setArray(6, con.createArrayOf("uuid", reqIds));
-            ps.setArray(7, con.createArrayOf("uuid", respIds));
-            ps.setString(8, rp.getProgramHash());
-            ps.setLong(9, rp.getVersion());
-            ps.setString(10, rp.getCompiledBy());
-            ps.setObject(11, rp.getCompiledAt());
+            ps.setObject(1, tenantId);
+            ps.setString(2, rp.getSourceService());
+            ps.setString(3, rp.getTargetService());
+            ps.setString(4, rp.getEndpoint());
+            ps.setString(5, reqJson);
+            ps.setString(6, respJson);
+            ps.setArray(7, con.createArrayOf("uuid", reqIds));
+            ps.setArray(8, con.createArrayOf("uuid", respIds));
+            ps.setString(9, rp.getProgramHash());
+            ps.setLong(10, rp.getVersion());
+            ps.setString(11, rp.getCompiledBy());
+            ps.setObject(12, rp.getCompiledAt());
             return ps;
         });
     }

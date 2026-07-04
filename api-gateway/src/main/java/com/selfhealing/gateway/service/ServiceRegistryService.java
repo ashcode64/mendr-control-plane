@@ -51,7 +51,7 @@ public class ServiceRegistryService {
     // ── URL Resolution ────────────────────────────────────────────────────────
 
     public String resolveBaseUrl(String serviceName) {
-        String cacheKey = URL_CACHE_PREFIX + serviceName;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(URL_CACHE_PREFIX + serviceName);
         Object cached = redisTemplate.opsForValue().get(cacheKey);
         if (cached != null) return cached.toString();
 
@@ -267,8 +267,8 @@ public class ServiceRegistryService {
     }
 
     public void evictCache(String serviceName) {
-        redisTemplate.delete(URL_CACHE_PREFIX + serviceName);
-        redisTemplate.delete(AUTH_CACHE_PREFIX + serviceName);
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(URL_CACHE_PREFIX + serviceName));
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(AUTH_CACHE_PREFIX + serviceName));
         routeChangedPublisher.publishTargetService(serviceName);
     }
 
