@@ -44,16 +44,23 @@ public class RouteConfigSnapshotPublisher {
     static final String SYNC_VERSION_KEY = "mendr:routeconfig:sync-version";
 
     private final RouteConfigService routeConfigService;
+    private final RouteProgramService routeProgramService;
     private final InterServiceRouteDiscovery routeDiscovery;
     private final StringRedisTemplate stringRedisTemplate;
     private final ObjectMapper objectMapper;
     private final GatewayInternalProperties internalProperties;
     private final GatewayOpenRestyProperties openRestyProperties;
 
+    /** Edge capability token: advertises support for snapshot v2 {@code ops[]} (MendrScript). */
+    public static final String CAP_V2 = "v2";
+
     private final Object pendingSyncLock = new Object();
-    private final List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> pendingSyncs =
-            new CopyOnWriteArrayList<>();
+    private final List<PendingSync> pendingSyncs = new CopyOnWriteArrayList<>();
     private final Set<String> knownRouteKeys = new HashSet<>();
+
+    /** A long-poll waiter together with the capabilities the requesting edge advertised. */
+    private record PendingSync(Set<String> caps,
+                               DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {}
 
     @EventListener(ApplicationReadyEvent.class)
     public void warmPublishOnStartup() {
@@ -110,25 +117,56 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public RouteConfigSyncPayload buildFullSyncPayload() {
+        return buildFullSyncPayload(Set.of());
+    }
+
+    /**
+     * Build the sync payload tailored to an edge's advertised capabilities (Gap 10).
+     * The snapshot itself is dual-shape (legacy buckets AND {@code ops[]}), so a v1
+     * edge transparently ignores {@code ops[]} and a v2 edge prefers it. The one
+     * unsafe case is a v2-ONLY route (a DSL program: {@code ops[]} present, buckets
+     * empty) served to a v1 edge — that would silently apply nothing. Such routes are
+     * WITHHELD from non-v2 edges and an alert is logged, rather than shipping a
+     * no-op that hides a needed heal. Withheld routes are treated like a transient
+     * build failure for removal-tracking so they are never evicted.
+     */
+    public RouteConfigSyncPayload buildFullSyncPayload(Set<String> caps) {
+        boolean v2 = caps != null && caps.contains(CAP_V2);
         Map<String, String> routes = new LinkedHashMap<>();
         Set<String> currentKeys = new HashSet<>();
+        // Routes whose source still exists but whose snapshot build failed this run.
+        // These must NOT be treated as "removed" — a transient build error must
+        // never evict a route the edge is actively healing.
+        Set<String> failedKeys = new HashSet<>();
 
         for (RouteTriple triple : routeDiscovery.discoverAll()) {
+            String key = redisKey(triple.source(), triple.target(), triple.endpoint());
             try {
                 RouteConfig config = routeConfigService.get(
                         triple.source(), triple.target(), triple.endpoint());
                 RouteConfigSnapshot snapshot = toSnapshot(config);
+                overlayMaterializedProgram(snapshot, triple.source(), triple.target(), triple.endpoint());
                 snapshot.setSyncValidation(isSyncValidationRoute(
                         triple.source(), triple.target(), triple.endpoint()));
                 applyDockerHostRewrite(snapshot);
 
-                String key = redisKey(triple.source(), triple.target(), triple.endpoint());
+                if (!v2 && isV2OnlyRoute(snapshot)) {
+                    // Capability mismatch: this edge cannot run the DSL program. Withhold +
+                    // alert (do NOT evict) so an operator/heartbeat can flag the stale edge.
+                    failedKeys.add(key);
+                    log.warn("Withholding v2-only route {} from a legacy(v1) edge — the edge must "
+                            + "advertise '{}' to receive the MendrScript program", key, CAP_V2);
+                    continue;
+                }
+
                 routes.put(key, objectMapper.writeValueAsString(snapshot));
                 currentKeys.add(key);
             } catch (JsonProcessingException e) {
+                failedKeys.add(key);
                 log.warn("Failed to serialize sync snapshot for {}:{}:{} — {}",
                         triple.source(), triple.target(), triple.endpoint(), e.getMessage());
             } catch (Exception e) {
+                failedKeys.add(key);
                 log.warn("Failed to build sync snapshot for {}:{}:{} — {}",
                         triple.source(), triple.target(), triple.endpoint(), e.getMessage());
             }
@@ -137,12 +175,17 @@ public class RouteConfigSnapshotPublisher {
         List<String> removed = new ArrayList<>();
         synchronized (pendingSyncLock) {
             for (String key : knownRouteKeys) {
-                if (!currentKeys.contains(key)) {
+                // Only remove a key when the route is genuinely gone from discovery —
+                // never merely because this run failed to (re)build its snapshot.
+                if (!currentKeys.contains(key) && !failedKeys.contains(key)) {
                     removed.add(key);
                 }
             }
+            // Keep previously-known keys whose build failed this run so they are
+            // re-evaluated (and not silently dropped) on the next sync.
             knownRouteKeys.clear();
             knownRouteKeys.addAll(currentKeys);
+            knownRouteKeys.addAll(failedKeys);
         }
 
         return RouteConfigSyncPayload.builder()
@@ -153,19 +196,45 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public void registerPendingSync(long since, DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {
+        registerPendingSync(since, Set.of(), deferred);
+    }
+
+    public void registerPendingSync(long since, Set<String> caps,
+                                    DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {
         synchronized (pendingSyncLock) {
             if (since < currentConfigVersion()) {
-                deferred.setResult(ResponseEntity.ok(buildFullSyncPayload()));
+                deferred.setResult(ResponseEntity.ok(buildFullSyncPayload(caps)));
                 return;
             }
-            pendingSyncs.add(deferred);
+            pendingSyncs.add(new PendingSync(caps == null ? Set.of() : caps, deferred));
         }
     }
 
     public void publishRoute(String sourceService, String targetService, String endpoint) {
+        // Recompile the materialized program first so the snapshot reflects the
+        // current rule set atomically. If recompile fails its integrity guard
+        // (empty program while active rules exist), DO NOT publish — leave the
+        // last good snapshot in place rather than blanking a healed route.
+        try {
+            routeProgramService.recompileRoute(sourceService, targetService, endpoint, "route-changed");
+        } catch (RouteProgramService.RouteProgramIntegrityException e) {
+            log.error("Skipping publish for {}:{}:{} — {}", sourceService, targetService, endpoint, e.getMessage());
+            return;
+        } catch (com.selfhealing.gateway.transform.TransformProgramConflictException e) {
+            // Conflicting approved rules (plan §4.10) — keep the last-good materialized
+            // program live and skip publish; the conflicting proposal needs human
+            // supersede/merge rather than silently clobbering another approved rule.
+            log.error("Skipping publish for {}:{}:{} — conflicting rules: {}",
+                    sourceService, targetService, endpoint, e.getMessage());
+            return;
+        } catch (Exception e) {
+            log.warn("Recompile failed for {}:{}:{} ({}). Publishing from assembled config.",
+                    sourceService, targetService, endpoint, e.getMessage());
+        }
         try {
             RouteConfig config = routeConfigService.get(sourceService, targetService, endpoint);
             RouteConfigSnapshot snapshot = toSnapshot(config);
+            overlayMaterializedProgram(snapshot, sourceService, targetService, endpoint);
             snapshot.setSyncValidation(isSyncValidationRoute(sourceService, targetService, endpoint));
             applyDockerHostRewrite(snapshot);
 
@@ -202,17 +271,21 @@ public class RouteConfigSnapshotPublisher {
 
     private void bumpVersionAndNotifySyncWaiters() {
         stringRedisTemplate.opsForValue().increment(SYNC_VERSION_KEY);
-        RouteConfigSyncPayload payload = buildFullSyncPayload();
 
-        List<DeferredResult<ResponseEntity<RouteConfigSyncPayload>>> waiters;
+        List<PendingSync> waiters;
         synchronized (pendingSyncLock) {
             waiters = new ArrayList<>(pendingSyncs);
             pendingSyncs.clear();
         }
 
-        ResponseEntity<RouteConfigSyncPayload> response = ResponseEntity.ok(payload);
-        for (DeferredResult<ResponseEntity<RouteConfigSyncPayload>> waiter : waiters) {
-            waiter.setResult(response);
+        // Each waiter gets a payload tailored to the capabilities it advertised, so a
+        // v1 edge never receives a v2-only route (and vice-versa). Built per distinct
+        // capability set to avoid recomputing for identical edges.
+        Map<Set<String>, RouteConfigSyncPayload> byCaps = new java.util.HashMap<>();
+        for (PendingSync waiter : waiters) {
+            RouteConfigSyncPayload payload = byCaps.computeIfAbsent(
+                    waiter.caps(), this::buildFullSyncPayload);
+            waiter.deferred().setResult(ResponseEntity.ok(payload));
         }
     }
 
@@ -246,6 +319,31 @@ public class RouteConfigSnapshotPublisher {
 
     public static String redisKey(String sourceService, String targetService, String endpoint) {
         return REDIS_KEY_PREFIX + sourceService + ":" + targetService + ":" + endpoint;
+    }
+
+    /**
+     * Overlay the durable, materialized merged program onto the snapshot when one
+     * exists. The assembled config still provides base URL / auth / CORS, but the
+     * transform programs come from the materialized {@code route_program} row so a
+     * transient per-publish compile can never blank a route that has approved rules.
+     */
+    private void overlayMaterializedProgram(RouteConfigSnapshot snapshot,
+                                            String source, String target, String endpoint) {
+        routeProgramService.find(source, target, endpoint).ifPresent(rp -> {
+            try {
+                if (rp.getRequestProgram() != null) {
+                    snapshot.setRequestProgram(objectMapper.convertValue(
+                            rp.getRequestProgram(), RouteConfigSnapshot.TransformProgramSnapshot.class));
+                }
+                if (rp.getResponseProgram() != null) {
+                    snapshot.setResponseProgram(objectMapper.convertValue(
+                            rp.getResponseProgram(), RouteConfigSnapshot.TransformProgramSnapshot.class));
+                }
+            } catch (Exception e) {
+                log.warn("Failed to overlay materialized program for {}:{}:{} — {}",
+                        source, target, endpoint, e.getMessage());
+            }
+        });
     }
 
     static RouteConfigSnapshot toSnapshot(RouteConfig config) {
@@ -296,6 +394,8 @@ public class RouteConfigSnapshotPublisher {
         return TransformProgramSnapshot.builder()
                 .empty(program.isEmpty())
                 .streamable(program.isStreamable())
+                .schemaVersion(program.getSchemaVersion() != null ? program.getSchemaVersion() : "v1")
+                .ops(program.getOps())
                 .renames(program.getRenames())
                 .defaults(program.getDefaults())
                 .coercions(program.getCoercions())
@@ -303,8 +403,35 @@ public class RouteConfigSnapshotPublisher {
                 .wrapKey(program.getWrapKey())
                 .unwrapKey(program.getUnwrapKey())
                 .moves(program.getMoves())
+                .scales(program.getScales())
+                .coalesce(program.getCoalesce())
+                .valueMaps(program.getValueMaps())
+                .dateFormats(program.getDateFormats())
+                .stripUnknown(program.getStripUnknown())
+                .wrapArrays(program.getWrapArrays())
+                .unwrapArrays(program.getUnwrapArrays())
                 .build();
     }
+
+    /** A route is "v2-only" when either direction carries {@code ops[]} but no legacy ops. */
+    static boolean isV2OnlyRoute(RouteConfigSnapshot snapshot) {
+        return isV2OnlyProgram(snapshot.getRequestProgram())
+                || isV2OnlyProgram(snapshot.getResponseProgram());
+    }
+
+    private static boolean isV2OnlyProgram(TransformProgramSnapshot p) {
+        if (p == null || p.getOps() == null || p.getOps().isEmpty()) {
+            return false;
+        }
+        return isEmpty(p.getRenames()) && isEmpty(p.getDefaults()) && isEmpty(p.getCoercions())
+                && isEmpty(p.getRemovals()) && isEmpty(p.getMoves()) && isEmpty(p.getScales())
+                && isEmpty(p.getCoalesce()) && isEmpty(p.getValueMaps()) && isEmpty(p.getDateFormats())
+                && isEmpty(p.getStripUnknown()) && isEmpty(p.getWrapArrays()) && isEmpty(p.getUnwrapArrays())
+                && p.getWrapKey() == null && p.getUnwrapKey() == null;
+    }
+
+    private static boolean isEmpty(Map<?, ?> m) { return m == null || m.isEmpty(); }
+    private static boolean isEmpty(java.util.Collection<?> c) { return c == null || c.isEmpty(); }
 
     private static java.util.Optional<RouteTriple> parseRouteKey(String routeKey) {
         int first = routeKey.indexOf(':');

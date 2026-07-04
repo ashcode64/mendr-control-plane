@@ -5,4 +5,5 @@
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/CorsUpstreamAnalyzerTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/SchemaMismatchAnalyzerTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/AnalysisRegressionHarnessTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/RuleValidatorTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/ai-analysis-service/src/test/java/com/selfhealing/analysis/service/ResponseMismatchAnalyzerTest.java

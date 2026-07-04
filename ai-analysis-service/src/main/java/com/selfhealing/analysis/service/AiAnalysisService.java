@@ -46,6 +46,14 @@ public class AiAnalysisService {
 
     private static final String TOPIC = "api.analysis.results";
 
+    /**
+     * Appended to the pointer-bearing system prompts (schema / response). The user
+     * turn is a nested context object, so this stops the model from pointing into
+     * that wrapper (e.g. /actualRequestPayload/...) instead of the payload root.
+     */
+    private static final String POINTER_GUIDANCE =
+            "\n" + com.selfhealing.analysis.service.tool.AnalysisTools.POINTER_ROOT_RULE + "\n";
+
     // ── System Prompts ────────────────────────────────────────────────────────
     //
     // The structured JSON user turn and the per-tool input_schema descriptions now
@@ -60,7 +68,7 @@ public class AiAnalysisService {
         Priority: actual has FEWER fields than receiver → propose_add_default; same count + name mismatch
         → propose_field_rename; same count + type mismatch → propose_type_coerce. Never cause data loss.
         If a deterministicFinding with hasConfidentMatch=true is present, fill in that tool's parameters.
-        """;
+        """ + POINTER_GUIDANCE;
 
     private static final String SYS_RESPONSE = """
         You are an expert distributed systems engineer specialising in API response contract analysis.
@@ -68,7 +76,7 @@ public class AiAnalysisService {
         Decide the ONE primary fix and call exactly one propose_response_* tool; remaining issues are
         fixed on later retries. Missing fields → add_default; name mismatch → field_rename; type mismatch
         → type_coerce; nesting differences → wrap/unwrap.
-        """;
+        """ + POINTER_GUIDANCE;
 
     private static final String SYS_ROUTING = """
         You are an expert SRE specialising in service routing and DNS.
@@ -136,6 +144,16 @@ public class AiAnalysisService {
         Map<String, Object> transformationRules = toolResult.transformationRules() != null
                 ? new LinkedHashMap<>(toolResult.transformationRules())
                 : new LinkedHashMap<>();
+
+        // Repair pointers that leaked the context-wrapper prefix (e.g. the model
+        // emitting /actualRequestPayload/tag_sent instead of /tag_sent) before any
+        // scan/harmonize/validate sees them.
+        int repairedPointers = RuleValidator.normalizeContextPointers(transformationRules);
+        if (repairedPointers > 0) {
+            log.warn("Stripped {} context-prefixed JSON pointer(s) from analysis rules for {}",
+                    repairedPointers, event.getFailureId());
+        }
+
         String rootCause = toolResult.rootCause();
         String permanentFix = toolResult.suggestedPermanentFix();
         double modelConfidence = toolResult.confidence();
@@ -152,11 +170,22 @@ public class AiAnalysisService {
         confidence = calibrateConfidence(confidence, modelConfidence, transformationRules, ctx);
 
         RuleValidator.ValidationResult validation = RuleValidator.validate(
-                transformationRules, event, ctx.upstreamAllowedOrigins());
+                transformationRules, event, ctx.upstreamAllowedOrigins(), event.getRequestPayload());
         boolean validationFailed = !validation.deployable();
         if (validationFailed) {
             confidence = Math.min(confidence, confidenceThreshold - 0.01);
             log.warn("Rule validation failed for {}: {}", event.getFailureId(), validation.reason());
+        }
+
+        // Deterministic effect preview: a restructure rule that cannot change the
+        // failing payload is an ineffective suggestion. Surface it and keep it below
+        // the approval threshold so a no-op "fix" is never auto-presented as deployable.
+        RuleValidator.EffectPreview effect = RuleValidator.describeEffect(
+                transformationRules, event.getRequestPayload());
+        if (!effect.effective()) {
+            confidence = Math.min(confidence, confidenceThreshold - 0.01);
+            log.warn("Analysis suggestion for {} is a no-op against the failing payload: {}",
+                    event.getFailureId(), effect.reason());
         }
 
         boolean routingUndeployable = isRoutingWithoutTargetUrl(transformationRules, event);
@@ -178,8 +207,8 @@ public class AiAnalysisService {
                 .suggestedPermanentFix(permanentFix)
                 .aiModel(toolResult.model())
                 .analysisSource(source)
-                .analysisMetadata(buildAnalysisMetadata(ctx, validation.reason()))
-                .status(confidence >= confidenceThreshold && !validationFailed && !routingUndeployable
+                .analysisMetadata(buildAnalysisMetadata(ctx, validation.reason(), effect))
+                .status(confidence >= confidenceThreshold && !validationFailed && !routingUndeployable && effect.effective()
                         ? AnalysisResult.AnalysisStatus.PENDING_APPROVAL
                         : AnalysisResult.AnalysisStatus.REJECTED)
                 .build();
@@ -190,12 +219,17 @@ public class AiAnalysisService {
      * Audit-only metadata kept OFF the deployed {@code transformationRules} map so
      * it never travels into a compiled route snapshot. Lives on its own column.
      */
-    private Map<String, Object> buildAnalysisMetadata(FailureAnalysisContext ctx, String validationReason) {
+    private Map<String, Object> buildAnalysisMetadata(FailureAnalysisContext ctx, String validationReason,
+                                                      RuleValidator.EffectPreview effect) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("upstreamAllowedOrigins", ctx.upstreamAllowedOrigins());
         meta.put("mendrEdgeAllowedOrigins", ctx.mendrEdgeAllowedOrigins());
         if (validationReason != null) {
             meta.put("validationReason", validationReason);
+        }
+        if (effect != null && !effect.effective()) {
+            meta.put("effective", false);
+            meta.put("noOpReason", effect.reason());
         }
         return meta;
     }

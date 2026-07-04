@@ -60,6 +60,18 @@ public class RouteConfigSnapshot {
     public static class TransformProgramSnapshot {
         private boolean empty;
         private boolean streamable;
+        /**
+         * MendrScript snapshot schema version. {@code "v1"} = legacy six-bucket only.
+         * {@code "v2"} = also carries {@link #ops}. Lets capability negotiation pick
+         * the right shape per edge (Gap 10).
+         */
+        private String schemaVersion;
+        /**
+         * MendrScript AST ops (snapshot v2). Each entry is a plain-JSON op object
+         * ({@code {op, ...args}}) the edge interpreter walks as DATA. Legacy buckets
+         * below stay populated so v1 edges keep working; upgraded edges prefer ops[].
+         */
+        private List<Map<String, Object>> ops;
         private Map<String, String> renames;
         private Map<String, Object> defaults;
         private Map<String, String> coercions;
@@ -68,5 +80,19 @@ public class RouteConfigSnapshot {
         private String unwrapKey;
         /** FIELD_MOVE restructure ops: each {from, to, copy?} with JSON-Pointer paths. */
         private List<Map<String, Object>> moves;
+        /** SCALE value ops: each {path, numerator, denominator, expectedMin, expectedMax}. */
+        private List<Map<String, Object>> scales;
+        /** COALESCE ops: each {path, value}, applied only when current value is null. */
+        private List<Map<String, Object>> coalesce;
+        /** MAP_VALUE ops: each {path, mapping, onUnmapped}. */
+        private List<Map<String, Object>> valueMaps;
+        /** REFORMAT_DATE ops: each {path, sourceFormat, targetFormat}. */
+        private List<Map<String, Object>> dateFormats;
+        /** STRIP_UNKNOWN ops: each {path, allowed:[...]}. */
+        private List<Map<String, Object>> stripUnknown;
+        /** WRAP_ARRAY ops: each {path}. */
+        private List<Map<String, Object>> wrapArrays;
+        /** UNWRAP_ARRAY ops: each {path}. */
+        private List<Map<String, Object>> unwrapArrays;
     }
 }

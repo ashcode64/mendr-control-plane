@@ -77,6 +77,7 @@ public class ApprovalEventConsumer {
                      "RESPONSE_FIELD_MOVE",
                      "RESPONSE_WRAP",
                      "RESPONSE_UNWRAP"        -> deployResponseTransformationRule(rules, ruleType, analysisIdStr, failureIdStr, actedBy);
+                case "DSL_PROGRAM"            -> deployDslProgram(rules, analysisIdStr, failureIdStr, actedBy);
                 default                       -> deployTransformationRule(rules, ruleType, analysisIdStr, failureIdStr, actedBy);
             }
         } catch (Exception e) {
@@ -416,6 +417,66 @@ public class ApprovalEventConsumer {
 
         log.info("✓ Transformation rule deployed: {} type={} for {}→{}{} (TTL {}h)",
             ruleId, ruleType, serviceA, serviceB, endpoint, defaultTtlHours);
+        routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
+    }
+
+    // ─── DSL_PROGRAM (MendrScript) ───────────────────────────────────────────
+
+    /**
+     * Deploy a verified MendrScript program. The chatbot/conversation-engine only
+     * proposes; approval lands here. We persist the AST ({schemaVersion, ops}) as a
+     * {@code DSL_PROGRAM} transformation rule. The api-gateway re-runs the SAME
+     * MendrScriptVerifier at its materialization point before the program is ever
+     * compiled into a snapshot and published to the edge — so an unsafe AST can
+     * never reach the data plane even if it slipped past synthesis-time checks.
+     */
+    @SuppressWarnings("unchecked")
+    private void deployDslProgram(Map<String, Object> rules, String analysisId,
+                                  String failureId, String actedBy) throws Exception {
+        Object opsRaw = rules.get("ops");
+        if (!(opsRaw instanceof java.util.List<?> ops) || ops.isEmpty()) {
+            log.error("DSL_PROGRAM has no ops[] — refusing to deploy (analysisId={})", analysisId);
+            return;
+        }
+
+        Object[] failureData = jdbcTemplate.queryForObject(
+            "SELECT service_a, service_b, endpoint FROM api_failures WHERE id = ?::uuid",
+            (rs, row) -> new Object[]{rs.getString(1), rs.getString(2), rs.getString(3)},
+            failureId);
+        if (failureData == null) { log.error("Failure not found: {}", failureId); return; }
+
+        String serviceA = (String) failureData[0];
+        String serviceB = (String) failureData[1];
+        String endpoint = (String) failureData[2];
+
+        // Persist only the AST shape the gateway compiler understands — strip chat /
+        // metadata fields so rule_definition is exactly {schemaVersion, ops}.
+        Map<String, Object> ast = new java.util.LinkedHashMap<>();
+        ast.put("schemaVersion", rules.getOrDefault("schemaVersion", "mendrscript/v1"));
+        ast.put("ops", ops);
+        String astJson = objectMapper.writeValueAsString(ast);
+
+        LocalDateTime expiresAt = LocalDateTime.now().plusHours(defaultTtlHours);
+        String ruleId = UUID.randomUUID().toString();
+        jdbcTemplate.update("""
+            INSERT INTO transformation_rules
+                (id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
+                 description, approved_by, approved_at, expires_at, is_active, version)
+            VALUES (?::uuid, ?::uuid, ?, ?, ?, 'DSL_PROGRAM', ?::jsonb, ?, ?, NOW(), ?, true, 1)
+            """,
+            ruleId, analysisId, serviceA, serviceB, endpoint, astJson,
+            "AI-synthesized MendrScript program (" + ops.size() + " ops) approved by " + actedBy,
+            actedBy, expiresAt);
+
+        jdbcTemplate.update("UPDATE api_failures SET status = 'RESOLVED' WHERE id = ?::uuid", failureId);
+        redisTemplate.delete("rules:" + serviceA + ":" + serviceB + ":" + endpoint);
+
+        audit(ruleId, "TRANSFORMATION_RULE", "DEPLOYED", actedBy,
+            String.format("{\"type\":\"DSL_PROGRAM\",\"ops\":%d,\"analysisId\":\"%s\",\"ttlHours\":%d}",
+                ops.size(), analysisId, defaultTtlHours));
+
+        log.info("✓ MendrScript DSL_PROGRAM deployed: {} ({} ops) for {}→{}{} (TTL {}h)",
+            ruleId, ops.size(), serviceA, serviceB, endpoint, defaultTtlHours);
         routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
     }
 

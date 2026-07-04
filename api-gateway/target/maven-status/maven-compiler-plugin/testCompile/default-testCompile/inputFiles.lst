@@ -1,9 +1,12 @@
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/RouteProgramServiceTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/util/JsonPointerTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/util/DockerHostUrlRewriterTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/GatewayProxyServiceTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/DynamicCorsServiceTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/ManifestImportServiceTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/util/JsonSchemaInferrerTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/InterServiceRouteDiscoveryTest.java
+/Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/transform/dsl/MendrScriptExecutorTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/RouteConfigSnapshotPublisherTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/transform/TransformProgramCompilerTest.java
 /Users/somandal/Desktop/personale/service py/mendr-control-plane/api-gateway/src/test/java/com/selfhealing/gateway/service/ResponseValidationServiceTest.java

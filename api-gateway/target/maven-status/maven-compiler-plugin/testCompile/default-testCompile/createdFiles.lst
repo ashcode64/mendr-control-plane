@@ -1,2 +1,17 @@
+com/selfhealing/gateway/util/DockerHostUrlRewriterTest.class
 com/selfhealing/gateway/service/ManifestImportServiceTest.class
+com/selfhealing/gateway/service/GatewayProxyServiceTest.class
+com/selfhealing/gateway/transform/StreamingJsonTransformerTest.class
+com/selfhealing/gateway/service/RouteProgramServiceTest.class
+com/selfhealing/gateway/service/ResponseValidationServiceTest.class
+com/selfhealing/gateway/model/RouteConfigTest.class
+com/selfhealing/gateway/service/RouteConfigSnapshotPublisherTest.class
+com/selfhealing/gateway/transform/StreamingJsonTransformerTest$1.class
+com/selfhealing/gateway/service/ServiceRegistryServiceTest.class
 com/selfhealing/gateway/util/JsonSchemaInferrerTest.class
+com/selfhealing/gateway/service/InterServiceRouteDiscoveryTest.class
+com/selfhealing/gateway/util/JsonPointerTest.class
+com/selfhealing/gateway/service/FailureIngestionServiceTest.class
+com/selfhealing/gateway/transform/dsl/MendrScriptExecutorTest.class
+com/selfhealing/gateway/service/DynamicCorsServiceTest.class
+com/selfhealing/gateway/transform/TransformProgramCompilerTest.class

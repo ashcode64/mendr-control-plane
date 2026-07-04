@@ -21,15 +21,30 @@ public class SyncController {
     private final RouteConfigSnapshotPublisher snapshotPublisher;
 
     @GetMapping("/routeconfig")
-    public Object syncRouteConfig(@RequestParam(name = "since", required = false) Long since) {
+    public Object syncRouteConfig(@RequestParam(name = "since", required = false) Long since,
+                                  @RequestParam(name = "caps", required = false) String caps) {
+        java.util.Set<String> capabilities = parseCaps(caps);
         long current = snapshotPublisher.currentConfigVersion();
         if (since == null || since < current) {
-            return ResponseEntity.ok(snapshotPublisher.buildFullSyncPayload());
+            return ResponseEntity.ok(snapshotPublisher.buildFullSyncPayload(capabilities));
         }
 
         DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred = new DeferredResult<>(SYNC_TIMEOUT_MS);
         deferred.onTimeout(() -> deferred.setResult(ResponseEntity.status(HttpStatus.NOT_MODIFIED).build()));
-        snapshotPublisher.registerPendingSync(since, deferred);
+        snapshotPublisher.registerPendingSync(since, capabilities, deferred);
         return deferred;
+    }
+
+    /** Parse the comma-separated edge capability list (e.g. {@code ?caps=v2}). */
+    private static java.util.Set<String> parseCaps(String caps) {
+        if (caps == null || caps.isBlank()) {
+            return java.util.Set.of();
+        }
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String c : caps.split(",")) {
+            String t = c.trim().toLowerCase();
+            if (!t.isEmpty()) out.add(t);
+        }
+        return out;
     }
 }

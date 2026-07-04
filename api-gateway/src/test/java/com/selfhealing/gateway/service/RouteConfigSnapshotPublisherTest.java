@@ -30,6 +30,7 @@ import static org.mockito.Mockito.when;
 class RouteConfigSnapshotPublisherTest {
 
     @Mock private RouteConfigService routeConfigService;
+    @Mock private RouteProgramService routeProgramService;
     @Mock private InterServiceRouteDiscovery routeDiscovery;
     @Mock private StringRedisTemplate stringRedisTemplate;
     @Mock private ValueOperations<String, String> valueOperations;
@@ -43,6 +44,7 @@ class RouteConfigSnapshotPublisherTest {
         GatewayOpenRestyProperties openRestyProperties = new GatewayOpenRestyProperties();
         publisher = new RouteConfigSnapshotPublisher(
                 routeConfigService,
+                routeProgramService,
                 routeDiscovery,
                 stringRedisTemplate,
                 objectMapper,
@@ -99,6 +101,7 @@ class RouteConfigSnapshotPublisherTest {
 
         RouteConfigSnapshotPublisher dockerPublisher = new RouteConfigSnapshotPublisher(
                 routeConfigService,
+                routeProgramService,
                 routeDiscovery,
                 stringRedisTemplate,
                 objectMapper,

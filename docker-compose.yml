@@ -89,11 +89,26 @@ services:
       SPRING_DATASOURCE_PASSWORD: secret
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy
       kafka:
         condition: service_healthy
+
+  conversation-engine:
+    build: ./conversation-engine
+    image: mendr/control-plane-conversation-engine:latest
+    ports:
+      - "8085:8085"
+    environment:
+      MCP_BASE_URL: http://ai-analysis-service:8082
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      MAX_REFINE_ITERATIONS: "3"
+    depends_on:
+      ai-analysis-service:
+        condition: service_started
 
   notification-service:
     build: ./notification-service
@@ -141,6 +156,8 @@ services:
       ai-analysis-service:
         condition: service_started
       rule-engine:
+        condition: service_started
+      conversation-engine:
         condition: service_started
 
 volumes:

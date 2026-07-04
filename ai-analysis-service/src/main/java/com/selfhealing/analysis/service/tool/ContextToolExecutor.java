@@ -28,6 +28,7 @@ public class ContextToolExecutor {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final FailureContextEnricher enricher;
+    private final MendrScriptGatewayClient mendrScriptGatewayClient;
 
     public static final List<Map<String, Object>> CONTEXT_TOOLS = List.of(
             toolDef("get_contract",
@@ -58,7 +59,24 @@ public class ContextToolExecutor {
                             "sourceService", strProp(),
                             "targetService", strProp(),
                             "endpoint", strProp()),
-                    List.of("sourceService", "targetService", "endpoint")));
+                    List.of("sourceService", "targetService", "endpoint")),
+            toolDef("verify_program",
+                    "Statically verify a MendrScript program (closed-opcode AST {schemaVersion, ops:[...]}). "
+                            + "Returns {valid, errors, warnings, signature}. ALWAYS call before proposing a program: "
+                            + "it enforces the opcode allowlist, arg types, protected-path scan, dataflow ordering, "
+                            + "value-op post-conditions and structured predicates — the SAME checks the deploy path runs.",
+                    Map.of("program", objProp("The MendrScript AST: {schemaVersion, ops:[...]}")),
+                    List.of("program")),
+            toolDef("simulate_transform",
+                    "Run a verified MendrScript program against example inputs using the reference executor and "
+                            + "return the before/after for each case (plus fail-closed faults as counterexamples). "
+                            + "Use this to SHOW the user what a program actually does before they approve it.",
+                    Map.of(
+                            "program", objProp("The MendrScript AST: {schemaVersion, ops:[...]}"),
+                            "cases", Map.of("type", "array",
+                                    "description", "List of {input, expected?} example objects",
+                                    "items", Map.of("type", "object"))),
+                    List.of("program", "cases")));
 
     /** Dispatch a context-tool call; returns a JSON-serializable result map. */
     public Object execute(String toolName, Map<String, Object> input) {
@@ -71,6 +89,10 @@ public class ContextToolExecutor {
                 case "get_recent_dns_probes" -> getRecentProbes(s(input, "service"));
                 case "get_similar_past_failures" -> getSimilarFailures(
                         s(input, "sourceService"), s(input, "targetService"), s(input, "endpoint"));
+                case "verify_program" -> mendrScriptGatewayClient.verify(input == null ? null : input.get("program"));
+                case "simulate_transform" -> mendrScriptGatewayClient.simulate(Map.of(
+                        "program", input == null ? Map.of() : input.getOrDefault("program", Map.of()),
+                        "cases", input == null ? List.of() : input.getOrDefault("cases", List.of())));
                 default -> Map.of("error", "unknown tool: " + toolName);
             };
         } catch (Exception e) {
@@ -131,6 +153,10 @@ public class ContextToolExecutor {
 
     private static Map<String, Object> strProp() {
         return Map.of("type", "string");
+    }
+
+    private static Map<String, Object> objProp(String description) {
+        return Map.of("type", "object", "description", description);
     }
 
     private static Map<String, Object> toolDef(String name, String description,

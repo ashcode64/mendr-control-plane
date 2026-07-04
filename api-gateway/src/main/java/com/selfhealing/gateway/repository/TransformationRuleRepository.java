@@ -16,6 +16,13 @@ public interface TransformationRuleRepository extends JpaRepository<Transformati
     List<TransformationRule> findByServiceAAndServiceBAndEndpointAndIsActiveTrue(
             String serviceA, String serviceB, String endpoint);
 
+    @Query("SELECT r FROM TransformationRule r WHERE r.serviceA = :serviceA AND r.serviceB = :serviceB "
+            + "AND r.endpoint = :endpoint AND r.isActive = true AND (r.expiresAt IS NULL OR r.expiresAt > :now) "
+            + "ORDER BY r.approvedAt ASC, r.createdAt ASC")
+    List<TransformationRule> findActiveNonExpiredForRoute(
+            @Param("serviceA") String serviceA, @Param("serviceB") String serviceB,
+            @Param("endpoint") String endpoint, @Param("now") LocalDateTime now);
+
     List<TransformationRule> findByIsActiveTrue();
 
     @Query("SELECT r FROM TransformationRule r WHERE r.isActive = true AND (r.expiresAt IS NULL OR r.expiresAt > :now)")

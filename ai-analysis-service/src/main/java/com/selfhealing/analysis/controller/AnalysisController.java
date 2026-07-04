@@ -1,19 +1,25 @@
 package com.selfhealing.analysis.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.model.AnalysisResult;
 import com.selfhealing.analysis.repository.AnalysisResultRepository;
+import com.selfhealing.analysis.service.tool.MendrScriptGatewayClient;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/analysis")
 @RequiredArgsConstructor
@@ -22,6 +28,9 @@ public class AnalysisController {
 
     private final AnalysisResultRepository analysisRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
+    private final MendrScriptGatewayClient mendrScriptGatewayClient;
+    private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
 
     @GetMapping
     public ResponseEntity<Page<AnalysisResult>> getAll(
@@ -40,6 +49,95 @@ public class AnalysisController {
         return analysisRepository.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * Stage a chat-synthesized MendrScript program against this analysis for approval.
+     *
+     * <p>The conversation engine only proposes; this is the single place a verified
+     * program is attached to an analysis so the EXISTING approve flow can deploy it. We
+     * re-verify server-side via the authoritative gateway verifier (defense-in-depth —
+     * never trust the client's "valid"), record the verbatim AST + signature +
+     * verification proof + before/after simulation in {@code transform_programs} for
+     * audit, and set the analysis's {@code transformationRules} to a {@code DSL_PROGRAM}
+     * the rule-engine knows how to deploy. This endpoint NEVER deploys — approval stays a
+     * separate human step.
+     */
+    @PostMapping("/{id}/program")
+    @SuppressWarnings("unchecked")
+    public ResponseEntity<Map<String, Object>> attachProgram(
+            @PathVariable UUID id,
+            @RequestBody Map<String, Object> body) {
+
+        return analysisRepository.findById(id).map(result -> {
+            Object program = body.get("program");
+            if (!(program instanceof Map<?, ?> progMap)
+                    || !(progMap.get("ops") instanceof List<?> ops) || ops.isEmpty()) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("error", "program must be a MendrScript AST with a non-empty ops[]");
+                return ResponseEntity.badRequest().body(err);
+            }
+
+            // Authoritative re-verification — the SAME verifier the deploy path runs.
+            Map<String, Object> verification = mendrScriptGatewayClient.verify(program);
+            if (!Boolean.TRUE.equals(verification.get("valid"))) {
+                Map<String, Object> resp = new HashMap<>();
+                resp.put("error", "program failed verification");
+                resp.put("verification", verification);
+                return ResponseEntity.unprocessableEntity().body(resp);
+            }
+
+            String schemaVersion = String.valueOf(
+                    ((Map<String, Object>) progMap).getOrDefault("schemaVersion", "mendrscript/v1"));
+            Object signature = verification.get("signature");
+            Object simulation = body.get("simulation");
+            String conversationId = str(body.get("conversationId"));
+            String model = str(body.get("model"));
+
+            // Provenance / audit row: verbatim AST + signature + verification proof + diffs.
+            UUID programId = UUID.randomUUID();
+            try {
+                jdbcTemplate.update("""
+                    INSERT INTO transform_programs
+                        (id, analysis_id, supersedes_analysis_id, conversation_id, model, schema_version,
+                         ast, signature, verification, example_diffs, status, created_by, created_at)
+                    VALUES (?::uuid, ?::uuid, ?::uuid, ?, ?, ?, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb,
+                            'PROPOSED', ?, NOW())
+                    """,
+                    programId.toString(), id.toString(), id.toString(), conversationId, model, schemaVersion,
+                    json(program), json(signature), json(verification), json(simulation),
+                    conversationId == null ? "conversation-engine" : conversationId);
+            } catch (Exception e) {
+                log.warn("transform_programs audit insert failed (continuing): {}", e.getMessage());
+            }
+
+            // The deployable rule the rule-engine understands: top-level {type, schemaVersion, ops}.
+            Map<String, Object> rules = new LinkedHashMap<>();
+            rules.put("type", "DSL_PROGRAM");
+            rules.put("schemaVersion", schemaVersion);
+            rules.put("ops", ops);
+            rules.put("signature", signature);
+            Map<String, Object> provenance = new LinkedHashMap<>();
+            provenance.put("transformProgramId", programId.toString());
+            provenance.put("conversationId", conversationId);
+            provenance.put("model", model);
+            provenance.put("verified", true);
+            rules.put("provenance", provenance);
+
+            result.setTransformationRules(rules);
+            result.setStatus(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+            analysisRepository.save(result);
+
+            log.info("Staged verified DSL_PROGRAM ({} ops) on analysis {} [program {}]",
+                    ops.size(), id, programId);
+
+            Map<String, Object> resp = new HashMap<>();
+            resp.put("message", "Verified program staged for approval");
+            resp.put("analysisId", id);
+            resp.put("transformProgramId", programId);
+            resp.put("verification", verification);
+            return ResponseEntity.ok(resp);
+        }).orElse(ResponseEntity.notFound().build());
     }
 
     /** Approve a transformation - triggers rule deployment */
@@ -99,5 +197,18 @@ public class AnalysisController {
         stats.put("approved", approved);
         stats.put("rejected", rejected);
         return ResponseEntity.ok(stats);
+    }
+
+    private String json(Object o) {
+        if (o == null) return null;
+        try {
+            return objectMapper.writeValueAsString(o);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String str(Object o) {
+        return o == null ? null : o.toString();
     }
 }

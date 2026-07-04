@@ -57,7 +57,9 @@ CREATE TABLE IF NOT EXISTS transformation_rules (
     service_a VARCHAR(255) NOT NULL,
     service_b VARCHAR(255) NOT NULL,
     endpoint VARCHAR(512) NOT NULL,
-    rule_type VARCHAR(50),               -- FIELD_RENAME, TYPE_COERCE, ADD_DEFAULT, REMOVE_FIELD, FIELD_MOVE
+    rule_type VARCHAR(50),               -- FIELD_RENAME, TYPE_COERCE, ADD_DEFAULT, REMOVE_FIELD, FIELD_MOVE,
+                                         -- SCALE, COALESCE, MAP_VALUE, REFORMAT_DATE, STRIP_UNKNOWN,
+                                         -- WRAP_ARRAY, UNWRAP_ARRAY, DSL_PROGRAM (MendrScript AST in rule_definition)
     rule_definition JSONB NOT NULL,
     description TEXT,
     approved_by VARCHAR(255),
@@ -72,6 +74,33 @@ CREATE TABLE IF NOT EXISTS transformation_rules (
 CREATE INDEX idx_rules_service_pair ON transformation_rules(service_a, service_b, endpoint);
 CREATE INDEX idx_rules_active ON transformation_rules(is_active);
 CREATE INDEX idx_rules_expires ON transformation_rules(expires_at);
+
+-- ─── MendrScript Program Provenance / Audit ───────────────────────────────
+-- Append-only audit trail for every chat-synthesized MendrScript program: the
+-- verbatim AST, its ProgramSignature, the authoritative verification proof, and the
+-- before/after simulation — plus provenance (which conversation + model produced it,
+-- and which analysis it superseded). The deployable AST itself lives in
+-- transformation_rules.rule_definition (rule_type = DSL_PROGRAM); this table is the
+-- evidence the security model requires ("audit AST + signature + verification proof
+-- on every deploy") and is never compiled into a route snapshot.
+CREATE TABLE IF NOT EXISTS transform_programs (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    analysis_id UUID REFERENCES analysis_results(id) ON DELETE SET NULL,
+    supersedes_analysis_id UUID,         -- analysis whose AI rule this program replaces
+    conversation_id VARCHAR(255),        -- conversation-engine session that produced it
+    model VARCHAR(100),                  -- LLM model id (pinned for reproducibility)
+    schema_version VARCHAR(50),          -- MendrScript opcode-set version (e.g. mendrscript/v1)
+    ast JSONB NOT NULL,                  -- verbatim {schemaVersion, ops:[...]}
+    signature JSONB,                     -- ProgramSignature (reads/writes/opcodes/opCount)
+    verification JSONB,                  -- verifier proof {valid, errors, warnings, signature}
+    example_diffs JSONB,                 -- simulation report (before/after per example)
+    status VARCHAR(50) DEFAULT 'PROPOSED',  -- PROPOSED, APPROVED, REJECTED
+    created_by VARCHAR(255),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE INDEX idx_transform_programs_analysis ON transform_programs(analysis_id);
+CREATE INDEX idx_transform_programs_created ON transform_programs(created_at DESC);
 
 -- ─── Approval Workflow ────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS approval_workflow (
@@ -301,6 +330,57 @@ CREATE TABLE IF NOT EXISTS response_transformation_rules (
 CREATE INDEX idx_resp_rules_pair    ON response_transformation_rules(service_a, service_b, endpoint);
 CREATE INDEX idx_resp_rules_active  ON response_transformation_rules(is_active);
 CREATE INDEX idx_resp_rules_expires ON response_transformation_rules(expires_at);
+
+-- ─── Materialized Route Program (durable merged program per route) ─────────
+-- One authoritative, versioned row per (source, target, endpoint). It is the
+-- merged result of ALL currently-active request + response transformation rules
+-- for the route, recompiled transactionally whenever the rule set changes
+-- (approve / reject / expire). The snapshot publisher reads THIS instead of
+-- recompiling on every publish, so a transient read/compile hiccup can never
+-- silently blank a route that still has approved rules.
+--   request_program / response_program : the merged TransformProgram (snapshot JSON)
+--   request_rule_ids / response_rule_ids : provenance — exactly which rules built it
+--   version          : monotonic per route; bumped only when the program changes
+--   program_hash     : sha256 of the canonical merged program; idempotent publishes
+CREATE TABLE IF NOT EXISTS route_program (
+    source_service     VARCHAR(255) NOT NULL,
+    target_service     VARCHAR(255) NOT NULL,
+    endpoint           VARCHAR(512) NOT NULL,
+
+    request_program    JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    response_program   JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    request_rule_ids   UUID[]       NOT NULL DEFAULT '{}',
+    response_rule_ids  UUID[]       NOT NULL DEFAULT '{}',
+    rule_count         INTEGER      NOT NULL DEFAULT 0,
+
+    program_hash       VARCHAR(64)  NOT NULL,
+    version            BIGINT       NOT NULL DEFAULT 1,
+    compiled_by        VARCHAR(255),
+    compiled_at        TIMESTAMP    NOT NULL DEFAULT NOW(),
+
+    PRIMARY KEY (source_service, target_service, endpoint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_program_version ON route_program(version);
+
+-- Append-only history for rollback / audit of the materialized program.
+CREATE TABLE IF NOT EXISTS route_program_history (
+    id                 UUID         PRIMARY KEY DEFAULT uuid_generate_v4(),
+    source_service     VARCHAR(255) NOT NULL,
+    target_service     VARCHAR(255) NOT NULL,
+    endpoint           VARCHAR(512) NOT NULL,
+    request_program    JSONB        NOT NULL,
+    response_program   JSONB        NOT NULL,
+    request_rule_ids   UUID[]       NOT NULL,
+    response_rule_ids  UUID[]       NOT NULL,
+    program_hash       VARCHAR(64)  NOT NULL,
+    version            BIGINT       NOT NULL,
+    compiled_by        VARCHAR(255),
+    compiled_at        TIMESTAMP    NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_program_history_route
+    ON route_program_history(source_service, target_service, endpoint, version DESC);
 
 -- ─── Auth Secrets (references only — actual secrets stay in k8s/env) ──────
 -- Stores which env var / k8s secret holds the credential for each service.

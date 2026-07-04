@@ -1,3 +1,10 @@
+com/selfhealing/analysis/service/SchemaMismatchAnalyzerTest.class
+com/selfhealing/analysis/service/RoutingUrlResolverTest.class
+com/selfhealing/analysis/service/ResponseMismatchAnalyzerTest.class
+com/selfhealing/analysis/service/TransformationRulesParserTest.class
 com/selfhealing/analysis/service/AnalysisRegressionHarnessTest.class
+com/selfhealing/analysis/service/EndpointNormalizerTest.class
+com/selfhealing/analysis/service/CorsUpstreamAnalyzerTest.class
+com/selfhealing/analysis/service/RuleValidatorTest.class
 com/selfhealing/analysis/service/AnalysisRegressionHarnessTest$Scenario.class
 com/selfhealing/analysis/controller/McpControllerTest.class

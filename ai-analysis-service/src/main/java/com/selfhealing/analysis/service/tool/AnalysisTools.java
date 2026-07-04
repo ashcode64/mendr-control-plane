@@ -17,6 +17,20 @@ public final class AnalysisTools {
 
     private AnalysisTools() {}
 
+    /**
+     * Pointer-grounding rule shared by every tool that takes JSON Pointers. The
+     * model is shown a nested CONTEXT object (with fields like actualRequestPayload,
+     * receiverContract, schema). Without this rule it tends to point INTO that
+     * wrapper (e.g. /actualRequestPayload/tag_sent) instead of into the payload it
+     * is transforming. Pointers are always relative to the payload root.
+     */
+    public static final String POINTER_ROOT_RULE =
+            "JSON Pointers are relative to the request/response PAYLOAD ROOT, NOT to the context object you "
+                    + "are shown. NEVER prefix a pointer with a context field name such as actualRequestPayload, "
+                    + "actualResponsePayload, schema, receiverContract or senderContract. Example: to address the "
+                    + "field shown at context schema.actualRequestPayload.obj_id.item_id.tag_sent, the pointer is "
+                    + "/obj_id/item_id/tag_sent.";
+
     // ── Schema (request) ───────────────────────────────────────────────────────
 
     public static final Map<String, Object> PROPOSE_FIELD_RENAME = tool(
@@ -69,7 +83,10 @@ public final class AnalysisTools {
                     + "Use when a value the receiver expects exists in the actual payload but at the WRONG depth "
                     + "(e.g. actual {credentials:{token}} but receiver wants top-level {token}; or actual {user_id} "
                     + "but receiver wants {user_obj:{user_id}}). Prefer this over ADD_DEFAULT for identity/secret "
-                    + "fields (token, *_id, password) — never fabricate those. Paths are JSON Pointers like /credentials/token.",
+                    + "fields (token, *_id, password) — never fabricate those. "
+                    + POINTER_ROOT_RULE
+                    + " The 'from' pointer MUST already exist in actualRequestPayload — if it does not, do not "
+                    + "propose a move (the field was renamed or is genuinely absent: pick rename/add_default instead).",
             props(
                     p("moves", moveArr()),
                     p("confidence", num()),
@@ -288,9 +305,12 @@ public final class AnalysisTools {
     private static Map<String, Object> moveArr() {
         Map<String, Object> itemProps = new LinkedHashMap<>();
         itemProps.put("from", Map.of("type", "string",
-                "description", "JSON Pointer to the value's current location, e.g. /credentials/token"));
+                "description", "JSON Pointer to the value's current location, relative to the payload root, "
+                        + "e.g. /credentials/token. Must already exist in actualRequestPayload. "
+                        + "Never prefix with a context field name like /actualRequestPayload."));
         itemProps.put("to", Map.of("type", "string",
-                "description", "JSON Pointer to the value's required location, e.g. /token"));
+                "description", "JSON Pointer to the value's required location, relative to the payload root, "
+                        + "e.g. /token. Never prefix with a context field name like /actualRequestPayload."));
         itemProps.put("copy", Map.of("type", "boolean",
                 "description", "true to keep the source (copy); default false (move/delete source)"));
         Map<String, Object> item = new LinkedHashMap<>();

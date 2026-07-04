@@ -84,6 +84,20 @@ public class TransformationRule {
         ADD_DEFAULT,
         REMOVE_FIELD,
         FIELD_MOVE,
-        NESTED_TRANSFORM
+        SCALE,
+        COALESCE,
+        MAP_VALUE,
+        REFORMAT_DATE,
+        STRIP_UNKNOWN,
+        WRAP_ARRAY,
+        UNWRAP_ARRAY,
+        NESTED_TRANSFORM,
+        /**
+         * A full MendrScript program (closed-vocabulary AST) authored by the
+         * conversation engine and verified before deploy. {@code ruleDefinition}
+         * carries {@code {schemaVersion, ops:[...]}}. Compiled into snapshot v2
+         * {@code ops[]} rather than the legacy buckets.
+         */
+        DSL_PROGRAM
     }
 }

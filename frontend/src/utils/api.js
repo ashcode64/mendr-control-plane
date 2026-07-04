@@ -61,6 +61,10 @@ export const api = {
   getAnalysis: id => analysis.get(`/${id}`).then(r => r.data),
   approveAnalysis: (id, approvedBy = 'dashboard-user') =>
     analysis.post(`/${id}/approve`, { approvedBy }).then(r => r.data),
+  // Stage a chat-synthesized, verified MendrScript program onto an analysis so the
+  // existing approve→deploy flow can ship it. Server re-verifies before persisting.
+  attachProgram: (id, body) =>
+    analysis.post(`/${id}/program`, body).then(r => r.data),
   rejectAnalysis: (id, reason) =>
     analysis.post(`/${id}/reject`, { reason }).then(r => r.data),
   getAnalysisStats: () => analysis.get('/stats').then(r => r.data),
@@ -92,5 +96,64 @@ export const api = {
     return services
       .post('/import-manifest', form, { headers: { 'Content-Type': 'multipart/form-data' } })
       .then(r => r.data);
+  },
+
+  // ── MendrScript conversation engine (SSE) ───────────────────────────────────
+  // Streams the synth loop (propose → verify → simulate → present) from the
+  // conversation engine. The engine NEVER deploys; it returns a verified program +
+  // before/after diff for the operator to approve through the normal flow.
+  // `onEvent(type, data)` is called for: session | security | progress | result |
+  // done | error | end. Returns an AbortController to cancel the stream.
+  streamChat: ({ message, sessionId, context, cases }, onEvent) => {
+    const controller = new AbortController();
+    (async () => {
+      try {
+        const resp = await fetch('/api/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId, message, context, cases }),
+          signal: controller.signal,
+        });
+        if (!resp.ok || !resp.body) {
+          onEvent('error', { message: `HTTP ${resp.status}` });
+          return;
+        }
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        // Parse one SSE event block (fields separated by single newlines).
+        const emit = block => {
+          let ev = 'message';
+          let data = '';
+          block.split('\n').forEach(line => {
+            if (line.startsWith('event:')) ev = line.slice(6).trim();
+            else if (line.startsWith('data:')) data += line.slice(5).trim();
+          });
+          if (data) {
+            try { onEvent(ev, JSON.parse(data)); }
+            catch { onEvent(ev, { raw: data }); }
+          }
+        };
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          // Normalize CRLF -> LF: sse_starlette delimits events with \r\n\r\n, so a
+          // naive indexOf('\n\n') would never match and every event would be dropped.
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            emit(buffer.slice(0, idx));
+            buffer = buffer.slice(idx + 2);
+          }
+        }
+        // Flush a trailing event that wasn't terminated by a blank line.
+        if (buffer.trim()) emit(buffer);
+      } catch (e) {
+        if (e.name !== 'AbortError') onEvent('error', { message: e.message });
+      } finally {
+        onEvent('end', {});
+      }
+    })();
+    return controller;
   },
 };

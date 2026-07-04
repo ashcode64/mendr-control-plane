@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import { api } from '../utils/api';
@@ -113,7 +113,209 @@ function OriginOverridePreview({ rules }) {
   );
 }
 
-function AnalysisDetail({ item, onApprove, onReject, onClose }) {
+/**
+ * Conversational refinement panel. The operator describes a different/extra fix in
+ * natural language; the conversation engine synthesizes a VERIFIED MendrScript program
+ * and streams back the program, its verification result, and a before/after simulation.
+ * Deployment is NOT done here — it still goes through the normal approval flow, so this
+ * panel is a safe, read-only "propose & inspect" surface.
+ */
+function MendrScriptChat({ item, onStaged }) {
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [streaming, setStreaming] = useState(false);
+  const [result, setResult] = useState(null);
+  const [flags, setFlags] = useState([]);
+  const [sessionId, setSessionId] = useState(null);
+  const [staging, setStaging] = useState(false);
+  const [staged, setStaged] = useState(false);
+  const [failure, setFailure] = useState(null);
+  const ctlRef = useRef(null);
+
+  useEffect(() => () => ctlRef.current?.abort(), []);
+
+  // The analysis row has no service/endpoint/payload — those live on the linked
+  // failure. Fetch it when the panel opens so the engine can pull contract examples
+  // and so we can seed the simulation with the ACTUAL failing payload (real
+  // before/after diff instead of an empty one).
+  useEffect(() => {
+    if (!open || failure || !item.failureId) return;
+    let alive = true;
+    api.getFailure(item.failureId).then(f => { if (alive) setFailure(f); }).catch(() => {});
+    return () => { alive = false; };
+  }, [open, failure, item.failureId]);
+
+  const context = {
+    service: failure?.serviceB,
+    endpoint: failure?.endpoint,
+    direction: 'REQUEST',
+  };
+  const cases = failure?.requestPayload ? [{ input: failure.requestPayload }] : [];
+
+  const send = () => {
+    const msg = input.trim();
+    if (!msg || streaming) return;
+    setMessages(m => [...m, { role: 'user', text: msg }]);
+    setInput('');
+    setStreaming(true);
+    setResult(null);
+    setFlags([]);
+    setStaged(false);
+    ctlRef.current = api.streamChat({ message: msg, sessionId, context, cases }, (type, data) => {
+      if (type === 'session') setSessionId(data.sessionId);
+      else if (type === 'security') setFlags(data.flags || []);
+      else if (type === 'result') {
+        setResult(data);
+        if (data.assistantText) setMessages(m => [...m, { role: 'assistant', text: data.assistantText }]);
+      } else if (type === 'error') {
+        setMessages(m => [...m, { role: 'assistant', text: 'Error: ' + (data.message || 'stream failed') }]);
+      } else if (type === 'end') {
+        setStreaming(false);
+      }
+    });
+  };
+
+  const v = result?.verification;
+  const sim = result?.simulation;
+
+  const stage = async () => {
+    if (!result?.program || !v?.valid || staging) return;
+    setStaging(true);
+    try {
+      await api.attachProgram(item.id, {
+        program: result.program,
+        simulation: result.simulation,
+        conversationId: sessionId,
+        model: result.model,
+      });
+      setStaged(true);
+      toast.success('Program staged — approve below to deploy');
+      onStaged?.(item.id);
+    } catch (e) {
+      toast.error(e.message || 'Staging failed');
+    } finally {
+      setStaging(false);
+    }
+  };
+
+  return (
+    <div style={{ marginBottom: '24px', borderTop: '1px solid var(--border)', paddingTop: '16px' }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        background: 'rgba(79,124,255,0.1)', border: '1px solid rgba(79,124,255,0.25)',
+        color: 'var(--accent-blue)', padding: '8px 14px', borderRadius: 'var(--radius-sm)',
+        cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+      }}>
+        💬 {open ? 'Hide' : 'Refine with MendrScript chat'}
+      </button>
+
+      {open && (
+        <div style={{ marginTop: '14px' }}>
+          <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px', lineHeight: 1.5 }}>
+            Describe the transformation you want (e.g. “convert <code>/amount</code> from cents to dollars”).
+            The assistant proposes a verified program — it cannot deploy; approve through the normal flow.
+          </div>
+
+          <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column',
+                        gap: '8px', marginBottom: '10px' }}>
+            {messages.map((m, i) => (
+              <div key={i} style={{
+                alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                background: m.role === 'user' ? 'rgba(79,124,255,0.12)' : 'var(--bg-card)',
+                border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)',
+                padding: '8px 12px', fontSize: '13px', color: 'var(--text-primary)', maxWidth: '85%',
+              }}>{m.text}</div>
+            ))}
+            {streaming && (
+              <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>synthesizing & verifying…</div>
+            )}
+          </div>
+
+          {flags.length > 0 && (
+            <div style={{ fontSize: '12px', color: 'var(--accent-yellow)', marginBottom: '10px' }}>
+              {flags.map((f, i) => <div key={i}>⚠ {f}</div>)}
+            </div>
+          )}
+
+          {result && (
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: v?.valid ? '#10e88a' : '#ff4757', fontWeight: 600,
+                            marginBottom: '6px' }}>
+                {v?.valid ? '✓ Verified' : '✗ Not deployable'}
+                {!v?.valid && Array.isArray(v?.errors) && v.errors.length > 0 && (
+                  <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+                    {' '}— {v.errors.slice(0, 4).join('; ')}
+                  </span>
+                )}
+              </div>
+
+              {result.program && (
+                <pre style={{ background: '#080c18', borderRadius: 'var(--radius-sm)', padding: '12px',
+                              fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--accent-cyan)',
+                              overflowX: 'auto', lineHeight: 1.5, border: '1px solid var(--border)' }}>
+                  {JSON.stringify(result.program, null, 2)}
+                </pre>
+              )}
+
+              {Array.isArray(sim?.results) && sim.results.length > 0 && (
+                <div style={{ marginTop: '8px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase',
+                                letterSpacing: '0.06em', marginBottom: '6px' }}>Before → After (simulation)</div>
+                  {sim.results.map((r, i) => (
+                    <div key={i} style={{ display: 'flex', gap: '8px', fontFamily: 'var(--font-mono)',
+                                          fontSize: '11px', marginBottom: '4px' }}>
+                      <span style={{ color: 'var(--text-muted)', flex: 1, wordBreak: 'break-all' }}>
+                        {JSON.stringify(r.input)}
+                      </span>
+                      <span style={{ color: 'var(--text-muted)' }}>→</span>
+                      <span style={{ color: r.ok ? '#10e88a' : '#ff4757', flex: 1, wordBreak: 'break-all' }}>
+                        {r.ok ? JSON.stringify(r.output) : `fail-closed: ${r.error}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {v?.valid && (
+                <button onClick={stage} disabled={staging || staged} style={{
+                  marginTop: '10px', padding: '8px 14px',
+                  background: staged ? 'rgba(16,232,138,0.06)' : 'rgba(16,232,138,0.12)',
+                  border: '1px solid rgba(16,232,138,0.3)',
+                  color: staged ? 'var(--text-muted)' : '#10e88a', borderRadius: 'var(--radius-sm)',
+                  cursor: staging || staged ? 'default' : 'pointer', fontWeight: 600, fontSize: '12px',
+                }}>
+                  {staged ? '✓ Staged — approve below to deploy'
+                    : staging ? 'Staging…'
+                    : '↑ Use this program (stage for approval)'}
+                </button>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <input
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') send(); }}
+              placeholder="Describe the change…"
+              disabled={streaming}
+              style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-sm)',
+                       border: '1px solid var(--border)', background: 'var(--bg-card)',
+                       color: 'var(--text-primary)', fontSize: '13px' }}
+            />
+            <button onClick={send} disabled={streaming || !input.trim()} style={{
+              padding: '8px 16px', background: 'rgba(79,124,255,0.12)', border: '1px solid rgba(79,124,255,0.3)',
+              color: 'var(--accent-blue)', borderRadius: 'var(--radius-sm)',
+              cursor: streaming ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '13px',
+            }}>Send</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnalysisDetail({ item, onApprove, onReject, onClose, onStaged }) {
   if (!item) return null;
   const isPending = item.status === 'PENDING_APPROVAL';
   const canDeploy = canDeployAnalysis(item);
@@ -185,6 +387,9 @@ function AnalysisDetail({ item, onApprove, onReject, onClose }) {
             </div>
           </div>
         )}
+
+        {/* Conversational refinement (verified, no-deploy) */}
+        <MendrScriptChat item={item} onStaged={onStaged} />
 
         {/* Actions */}
         {isPending && (
@@ -259,12 +464,22 @@ export default function Analysis({ onApproval }) {
     } catch { toast.error('Rejection failed'); }
   };
 
+  // A chat-synthesized program was staged onto the analysis: re-fetch it so the open
+  // dialog now shows the DSL_PROGRAM rule and the existing Approve & Deploy button ships it.
+  const handleStaged = async (id) => {
+    try {
+      const updated = await api.getAnalysis(id);
+      setSelected(updated);
+    } catch { /* keep current view */ }
+    fetch();
+  };
+
   const filtered = filter === 'ALL' ? data : data.filter(d => d.status === filter);
   const pendingCount = data.filter(d => d.status === 'PENDING_APPROVAL').length;
 
   return (
     <div style={{ animation: 'slide-in-up 0.35s ease forwards' }}>
-      <AnalysisDetail item={selected} onApprove={handleApprove} onReject={handleReject} onClose={() => setSelected(null)} />
+      <AnalysisDetail item={selected} onApprove={handleApprove} onReject={handleReject} onClose={() => setSelected(null)} onStaged={handleStaged} />
 
       <div style={S.header}>
         <div>
