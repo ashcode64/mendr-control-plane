@@ -26,11 +26,25 @@ class Proposer:
     def enabled(self) -> bool:
         return self._client is not None
 
-    async def propose(self, user_message: str, context: dict, prior_errors: list[str]) -> tuple[dict | None, str]:
+    async def propose(
+        self,
+        user_message: str,
+        context: dict,
+        prior_errors: list[str],
+        prior_turns: list[dict] | None = None,
+    ) -> tuple[dict | None, str]:
         """Return (program_dict | None, assistant_text)."""
         if not self._client:
             return None, ("LLM is not configured (no ANTHROPIC_API_KEY). I can verify and "
                           "simulate a program you paste, but I cannot synthesize one here.")
+
+        messages = []
+        for turn in (prior_turns or [])[-10:]:
+            role = (turn.get("role") or "").lower()
+            text = (turn.get("text") or "").strip()
+            if role not in ("user", "assistant") or not text:
+                continue
+            messages.append({"role": role, "content": text})
 
         user_blocks = [f"Request: {user_message}"]
         if context:
@@ -39,6 +53,7 @@ class Proposer:
             user_blocks.append(
                 "Your previous program FAILED verification with these errors — fix ALL of them "
                 f"and re-propose: {prior_errors}")
+        messages.append({"role": "user", "content": "\n\n".join(user_blocks)})
 
         resp = await self._client.messages.create(
             model=settings.anthropic_model,
@@ -46,7 +61,7 @@ class Proposer:
             system=SYSTEM_PROMPT,
             tools=[PROPOSE_PROGRAM_TOOL],
             tool_choice={"type": "tool", "name": "propose_program"},
-            messages=[{"role": "user", "content": "\n\n".join(user_blocks)}],
+            messages=messages,
         )
 
         text_parts, program = [], None

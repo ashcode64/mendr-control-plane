@@ -44,8 +44,10 @@ public class SecurityConfig {
                 .authorizeHttpRequests(registry -> {
                     registry.requestMatchers("/actuator/**", "/error").permitAll();
                     if (properties.isEnforce()) {
-                        // /mcp is machine-only; /api/analysis is dashboard (JWT) + internal.
-                        registry.requestMatchers("/mcp/**", "/api/analysis/**").authenticated();
+                        // /mcp and /api/internal/analysis are machine-only; /api/analysis is
+                        // dashboard (JWT) + internal.
+                        registry.requestMatchers("/mcp/**", "/api/analysis/**", "/api/internal/analysis/**")
+                                .authenticated();
                         registry.anyRequest().permitAll();
                     } else {
                         registry.anyRequest().permitAll();

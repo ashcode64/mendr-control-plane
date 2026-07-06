@@ -21,6 +21,8 @@ def _csv(name: str, default: str) -> list[str]:
 
 
 class Settings:
+    analysis_base_url: str = os.getenv("ANALYSIS_BASE_URL", "http://ai-analysis-service:8082")
+
     # MCP server on ai-analysis-service exposes verify_program / simulate_transform
     # and the read-only context tools (get_contract, get_active_rules, ...).
     mcp_base_url: str = os.getenv("MCP_BASE_URL", "http://ai-analysis-service:8082")

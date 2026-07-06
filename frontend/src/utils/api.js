@@ -76,6 +76,8 @@ export const api = {
     analysis.get('', { params: { page, size } }).then(r => r.data),
   getPendingAnalyses: () => analysis.get('/pending').then(r => r.data),
   getAnalysis: id => analysis.get(`/${id}`).then(r => r.data),
+  getAnalysisConversation: (id, limit = 20) =>
+    analysis.get(`/${id}/conversation`, { params: { limit } }).then(r => r.data),
   approveAnalysis: (id, approvedBy = 'dashboard-user') =>
     analysis.post(`/${id}/approve`, { approvedBy }).then(r => r.data),
   // Stage a chat-synthesized, verified MendrScript program onto an analysis so the
@@ -121,7 +123,7 @@ export const api = {
   // before/after diff for the operator to approve through the normal flow.
   // `onEvent(type, data)` is called for: session | security | progress | result |
   // done | error | end. Returns an AbortController to cancel the stream.
-  streamChat: ({ message, sessionId, context, cases }, onEvent) => {
+  streamChat: ({ analysisId, message, sessionId, context, cases }, onEvent) => {
     const controller = new AbortController();
     (async () => {
       try {
@@ -131,7 +133,7 @@ export const api = {
         const resp = await fetch('/api/chat/stream', {
           method: 'POST',
           headers,
-          body: JSON.stringify({ sessionId, message, context, cases }),
+          body: JSON.stringify({ analysisId, sessionId, message, context, cases }),
           signal: controller.signal,
         });
         if (resp.status === 401) {
