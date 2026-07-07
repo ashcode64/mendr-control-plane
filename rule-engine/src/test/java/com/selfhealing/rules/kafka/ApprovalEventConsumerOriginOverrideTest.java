@@ -1,7 +1,7 @@
 package com.selfhealing.rules.kafka;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.selfhealing.rules.service.RouteChangedPublisher;
+import com.selfhealing.rules.service.RouteSyncNotifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -25,17 +25,17 @@ class ApprovalEventConsumerOriginOverrideTest {
 
     @Mock private JdbcTemplate jdbcTemplate;
     @Mock private RedisTemplate<String, Object> redisTemplate;
-    @Mock private RouteChangedPublisher routeChangedPublisher;
+    @Mock private RouteSyncNotifier routeSyncNotifier;
 
     private ApprovalEventConsumer consumer;
 
     @BeforeEach
     void setUp() {
-        consumer = new ApprovalEventConsumer(jdbcTemplate, redisTemplate, new ObjectMapper(), routeChangedPublisher);
+        consumer = new ApprovalEventConsumer(jdbcTemplate, redisTemplate, new ObjectMapper(), routeSyncNotifier);
     }
 
     @Test
-    void deploysOriginOverrideRuleOnApproval() {
+    void deploysOriginOverrideRuleOnApproval() throws Exception {
         String analysisId = UUID.randomUUID().toString();
         String failureId = UUID.randomUUID().toString();
 
@@ -60,7 +60,8 @@ class ApprovalEventConsumerOriginOverrideTest {
         consumer.onApproved(event);
 
         verify(jdbcTemplate).update(contains("INSERT INTO origin_override_rules"), any(Object[].class));
-        verify(routeChangedPublisher).publishRoute("order-service", "payment-service", "/api/payments/process");
+        verify(routeSyncNotifier).notifyRouteChanged(
+                "order-service", "payment-service", "/api/payments/process", "origin-override-deployed");
 
         ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
         verify(jdbcTemplate, org.mockito.Mockito.atLeastOnce()).update(sqlCaptor.capture(), any(Object[].class));

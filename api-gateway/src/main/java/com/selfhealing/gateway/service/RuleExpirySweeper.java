@@ -114,7 +114,7 @@ public class RuleExpirySweeper {
             rule.setActive(false);
             originOverrideRuleRepository.save(rule);
             // Recompile + republish the exact route so the override disappears.
-            snapshotPublisher.publishRoute(
+            snapshotPublisher.republishRoute(
                     rule.getSourceService(), rule.getTargetService(), rule.getEndpoint());
             log.info("Origin-override rule expired for {}->{}{}",
                     rule.getSourceService(), rule.getTargetService(), rule.getEndpoint());

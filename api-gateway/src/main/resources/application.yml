@@ -59,6 +59,15 @@ gateway:
   rules:
     cache-ttl-seconds: 60
     confidence-threshold: 0.75
+  sync:
+    outbox-enabled: true
+    outbox-poll-interval-ms: 3000
+    outbox-initial-delay-ms: 5000
+    outbox-max-attempts: 10
+    outbox-retry-backoff-seconds: 5
+    reconciler-enabled: true
+    reconciler-interval-ms: 60000
+    reconciler-initial-delay-ms: 45000
   internal:
     api-key: ${GATEWAY_INTERNAL_API_KEY:}
     validate-dedup-ttl-seconds: 60

@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,6 +39,8 @@ class RouteConfigSnapshotPublisherTest {
     private RouteConfigSnapshotPublisher publisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Mock private RouteSyncMetrics syncMetrics;
+
     // Physical Redis keys are namespaced per tenant; with no bound context the
     // publisher falls back to the default tenant.
     private static final String TENANT_NS = "t:00000000-0000-0000-0000-000000000001:";
@@ -53,7 +56,8 @@ class RouteConfigSnapshotPublisherTest {
                 stringRedisTemplate,
                 objectMapper,
                 internalProperties,
-                openRestyProperties);
+                openRestyProperties,
+                syncMetrics);
     }
 
     @Test
@@ -110,7 +114,8 @@ class RouteConfigSnapshotPublisherTest {
                 stringRedisTemplate,
                 objectMapper,
                 new GatewayInternalProperties(),
-                openRestyProperties);
+                openRestyProperties,
+                syncMetrics);
 
         RouteConfig config = RouteConfig.builder()
                 .sourceService("order-service")
@@ -256,5 +261,65 @@ class RouteConfigSnapshotPublisherTest {
         assertThat(RouteConfigSnapshotPublisher.rewriteLocalHost(
                 "http://127.0.0.1:8091", "host.docker.internal"))
                 .isEqualTo("http://host.docker.internal:8091");
+    }
+
+    @Test
+    void overlayDoesNotBlankWhenMaterializedEmptyButActiveRulesExist() throws Exception {
+        java.util.Map<String, Object> emptyReq = java.util.Map.of("empty", true, "ops", java.util.List.of());
+        java.util.Map<String, Object> fixedReq = new java.util.LinkedHashMap<>();
+        fixedReq.put("empty", false);
+        fixedReq.put("ops", java.util.List.of(
+                java.util.Map.of("op", "move", "from", "/obj_id/item_id/new_id", "to", "/tag_sent")));
+
+        com.selfhealing.gateway.model.RouteProgram stale =
+                com.selfhealing.gateway.model.RouteProgram.builder()
+                        .requestProgram(emptyReq)
+                        .responseProgram(emptyReq)
+                        .programHash("stale")
+                        .ruleCount(0)
+                        .build();
+        com.selfhealing.gateway.model.RouteProgram fixed =
+                com.selfhealing.gateway.model.RouteProgram.builder()
+                        .requestProgram(fixedReq)
+                        .responseProgram(emptyReq)
+                        .programHash("fixedhash")
+                        .ruleCount(1)
+                        .build();
+
+        when(routeProgramService.recompileRoute(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new RouteProgramService.RecompileResult(true, 2, 1));
+        when(routeProgramService.hasActiveRules("inventory-service", "shipping-service", "/ship"))
+                .thenReturn(true);
+        when(routeProgramService.countActiveRules("inventory-service", "shipping-service", "/ship"))
+                .thenReturn(1);
+        when(routeProgramService.find("inventory-service", "shipping-service", "/ship"))
+                .thenReturn(java.util.Optional.of(stale), java.util.Optional.of(fixed));
+
+        RouteConfig config = RouteConfig.builder()
+                .sourceService("inventory-service")
+                .targetService("shipping-service")
+                .endpoint("/ship")
+                .targetBaseUrl("http://localhost:8002")
+                .authType(ServiceRegistration.AuthType.NONE)
+                .corsActive(false)
+                .allowedOrigins(Set.of())
+                .hasResponseContract(false)
+                .requestProgram(TransformProgram.none())
+                .build();
+
+        when(routeConfigService.get("inventory-service", "shipping-service", "/ship")).thenReturn(config);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        publisher.publishRoute("inventory-service", "shipping-service", "/ship");
+
+        org.mockito.ArgumentCaptor<String> jsonCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(valueOperations).set(
+                eq(TENANT_NS + "mendr:routeconfig:inventory-service:shipping-service:/ship"),
+                jsonCaptor.capture());
+
+        JsonNode root = objectMapper.readTree(jsonCaptor.getValue());
+        assertThat(root.get("programHash").asText()).isEqualTo("fixedhash");
+        assertThat(root.get("requestProgram").get("ops")).hasSize(1);
+        verify(syncMetrics).recordOverlayDrift();
     }
 }

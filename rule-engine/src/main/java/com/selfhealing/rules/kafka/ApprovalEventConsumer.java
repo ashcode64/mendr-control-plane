@@ -11,7 +11,8 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 import com.selfhealing.rules.util.RoutingUrlResolver;
-import com.selfhealing.rules.service.RouteChangedPublisher;
+import com.selfhealing.rules.service.RouteSyncNotifier;
+import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.UUID;
@@ -40,14 +41,15 @@ public class ApprovalEventConsumer {
     private final JdbcTemplate          jdbcTemplate;
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper          objectMapper;
-    private final RouteChangedPublisher routeChangedPublisher;
+    private final RouteSyncNotifier routeSyncNotifier;
 
     @Value("${rules.default-ttl-hours:48}")
     private int defaultTtlHours;
 
     @KafkaListener(topics = "api.transformations.approved", groupId = "rule-engine-group")
+    @Transactional
     @SuppressWarnings("unchecked")
-    public void onApproved(@Payload Map<String, Object> event) {
+    public void onApproved(@Payload Map<String, Object> event) throws Exception {
         String analysisIdStr = str(event.get("analysisId"));
         String failureIdStr  = str(event.get("failureId"));
         String action        = str(event.get("action"));
@@ -82,6 +84,7 @@ public class ApprovalEventConsumer {
             }
         } catch (Exception e) {
             log.error("Failed to deploy {} rule: {}", ruleType, e.getMessage(), e);
+            throw e;
         }
     }
 
@@ -157,7 +160,7 @@ public class ApprovalEventConsumer {
                 serviceName, originalUrl, newUrl, defaultTtlHours));
 
         log.info("✓ Routing rule deployed: {} → {} → {} (TTL {}h)", ruleId, serviceName, newUrl, defaultTtlHours);
-        routeChangedPublisher.publishTargetService(serviceName);
+        routeSyncNotifier.notifyTargetServiceChanged(serviceName, "routing-override-deployed");
     }
 
     // ─── CORS_ALLOW ──────────────────────────────────────────────────────────
@@ -204,7 +207,7 @@ public class ApprovalEventConsumer {
                 targetService, newOrigin, defaultTtlHours));
 
         log.info("✓ CORS rule deployed: {} can now call {} (TTL {}h)", newOrigin, targetService, defaultTtlHours);
-        routeChangedPublisher.publishTargetService(targetService);
+        routeSyncNotifier.notifyTargetServiceChanged(targetService, "cors-rule-deployed");
     }
 
     // ─── CORS_ORIGIN_OVERRIDE ────────────────────────────────────────────────
@@ -283,7 +286,7 @@ public class ApprovalEventConsumer {
 
         log.info("✓ Origin override deployed: {} → {} rewrites Origin {} → {} on {} (TTL {}h)",
                 sourceService, targetService, callerOrigin, outboundOrigin, endpoint, ttlHours);
-        routeChangedPublisher.publishRoute(sourceService, targetService, endpoint);
+        routeSyncNotifier.notifyRouteChanged(sourceService, targetService, endpoint, "origin-override-deployed");
     }
 
     private Object[] loadFailureRoute(String failureId) {
@@ -375,7 +378,7 @@ public class ApprovalEventConsumer {
 
         log.info("✓ Response transformation rule deployed: {} type={} for {}→{}{} (TTL {}h)",
             ruleId, ruleType, serviceA, serviceB, endpoint, defaultTtlHours);
-        routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
+        routeSyncNotifier.notifyRouteChanged(serviceA, serviceB, endpoint, "response-rule-deployed");
     }
 
     @SuppressWarnings("unchecked")
@@ -419,7 +422,7 @@ public class ApprovalEventConsumer {
 
         log.info("✓ Transformation rule deployed: {} type={} for {}→{}{} (TTL {}h)",
             ruleId, ruleType, serviceA, serviceB, endpoint, defaultTtlHours);
-        routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
+        routeSyncNotifier.notifyRouteChanged(serviceA, serviceB, endpoint, "transformation-rule-deployed");
     }
 
     // ─── DSL_PROGRAM (MendrScript) ───────────────────────────────────────────
@@ -462,16 +465,18 @@ public class ApprovalEventConsumer {
         String ruleId = UUID.randomUUID().toString();
         jdbcTemplate.update("""
             INSERT INTO transformation_rules
-                (id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
+                (id, tenant_id, analysis_id, service_a, service_b, endpoint, rule_type, rule_definition,
                  description, approved_by, approved_at, expires_at, is_active, version)
-            VALUES (?::uuid, ?::uuid, ?, ?, ?, 'DSL_PROGRAM', ?::jsonb, ?, ?, NOW(), ?, true, 1)
+            VALUES (?::uuid, ?, ?::uuid, ?, ?, ?, 'DSL_PROGRAM', ?::jsonb, ?, ?, NOW(), ?, true, 1)
             """,
-            ruleId, analysisId, serviceA, serviceB, endpoint, astJson,
+            ruleId, tenantId(), analysisId, serviceA, serviceB, endpoint, astJson,
             "AI-synthesized MendrScript program (" + ops.size() + " ops) approved by " + actedBy,
             actedBy, expiresAt);
 
         jdbcTemplate.update("UPDATE api_failures SET status = 'RESOLVED' WHERE id = ?::uuid", failureId);
-        redisTemplate.delete("rules:" + serviceA + ":" + serviceB + ":" + endpoint);
+        String cacheKey = com.selfhealing.rules.tenant.TenantKeys.scoped(
+                "rules:" + serviceA + ":" + serviceB + ":" + endpoint);
+        redisTemplate.delete(cacheKey);
 
         audit(ruleId, "TRANSFORMATION_RULE", "DEPLOYED", actedBy,
             String.format("{\"type\":\"DSL_PROGRAM\",\"ops\":%d,\"analysisId\":\"%s\",\"ttlHours\":%d}",
@@ -479,7 +484,7 @@ public class ApprovalEventConsumer {
 
         log.info("✓ MendrScript DSL_PROGRAM deployed: {} ({} ops) for {}→{}{} (TTL {}h)",
             ruleId, ops.size(), serviceA, serviceB, endpoint, defaultTtlHours);
-        routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
+        routeSyncNotifier.notifyRouteChanged(serviceA, serviceB, endpoint, "dsl-program-deployed");
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────

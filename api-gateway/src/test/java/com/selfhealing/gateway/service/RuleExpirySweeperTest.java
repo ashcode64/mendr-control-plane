@@ -87,7 +87,7 @@ class RuleExpirySweeperTest {
 
         verify(originOverrideRuleRepository).save(oo);
         assertThat(oo.isActive()).isFalse();
-        verify(snapshotPublisher).publishRoute("order-service", "payment-service", "/api/pay");
+        verify(snapshotPublisher).republishRoute("order-service", "payment-service", "/api/pay");
 
         // Context is always cleared after the per-tenant pass.
         assertThat(TenantContext.getTenantId()).isNull();
