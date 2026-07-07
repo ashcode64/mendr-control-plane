@@ -1,6 +1,6 @@
 package com.selfhealing.rules.controller;
 
-import com.selfhealing.rules.service.RouteChangedPublisher;
+import com.selfhealing.rules.service.RuleDisableService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
@@ -16,11 +16,10 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/rules")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "*")
 public class RuleController {
 
     private final JdbcTemplate jdbcTemplate;
-    private final RouteChangedPublisher routeChangedPublisher;
+    private final RuleDisableService ruleDisableService;
 
     @GetMapping
     public ResponseEntity<List<Map<String, Object>>> getAllRules() {
@@ -49,32 +48,8 @@ public class RuleController {
             @PathVariable UUID id,
             @RequestParam(defaultValue = "dashboard-user") String actor) {
 
-        // Capture the rule's route BEFORE deactivating so we can trigger a recompile.
-        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT service_a, service_b, endpoint FROM transformation_rules WHERE id = ?::uuid",
-                id.toString());
-
-        int updated = jdbcTemplate.update(
-                "UPDATE transformation_rules SET is_active = false, updated_at = NOW() WHERE id = ?::uuid",
-                id.toString());
-
-        if (updated == 0) return ResponseEntity.notFound().build();
-
-        jdbcTemplate.update("""
-                INSERT INTO audit_log (entity_type, entity_id, action, actor, details)
-                VALUES ('TRANSFORMATION_RULE', ?::uuid, 'DISABLED', ?, '{}')
-                """, id.toString(), actor);
-
-        // Disabling a single rule must recompile the route's merged program from
-        // whatever rules REMAIN active — it can only shrink this rule's
-        // contribution, never wipe the route. The gateway recompiles + republishes
-        // the materialized program on this notification.
-        if (!rows.isEmpty()) {
-            Map<String, Object> r = rows.get(0);
-            routeChangedPublisher.publishRoute(
-                    String.valueOf(r.get("service_a")),
-                    String.valueOf(r.get("service_b")),
-                    String.valueOf(r.get("endpoint")));
+        if (!ruleDisableService.disableRule(id, actor)) {
+            return ResponseEntity.notFound().build();
         }
 
         Map<String, Object> response = new HashMap<>();

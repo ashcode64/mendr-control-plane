@@ -42,10 +42,32 @@ logging:
   level:
     com.selfhealing: DEBUG
 
+mendr:
+  tenancy:
+    default-tenant-id: 00000000-0000-0000-0000-000000000001
+    # Set false for strict isolation once every entry point sets a real tenant.
+    fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}
+  auth:
+    # When true every request must present a WorkOS JWT or per-tenant API key.
+    enforce: ${MENDR_AUTH_ENFORCE:false}
+    # WorkOS JWT validation is enabled only when a JWKS URI is provided via env
+    # (left out of YAML so "unset" means truly absent, not empty):
+    #   MENDR_AUTH_WORKOS_JWKS_URI, MENDR_AUTH_WORKOS_ISSUER,
+    #   MENDR_AUTH_WORKOS_AUDIENCE, MENDR_AUTH_WORKOS_ORG_CLAIM (default org_id)
+
 gateway:
   rules:
     cache-ttl-seconds: 60
     confidence-threshold: 0.75
+  sync:
+    outbox-enabled: true
+    outbox-poll-interval-ms: 3000
+    outbox-initial-delay-ms: 5000
+    outbox-max-attempts: 10
+    outbox-retry-backoff-seconds: 5
+    reconciler-enabled: true
+    reconciler-interval-ms: 60000
+    reconciler-initial-delay-ms: 45000
   internal:
     api-key: ${GATEWAY_INTERNAL_API_KEY:}
     validate-dedup-ttl-seconds: 60

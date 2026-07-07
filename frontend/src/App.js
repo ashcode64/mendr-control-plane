@@ -9,6 +9,7 @@ import Rules from './pages/Rules';
 import Services from './pages/Services';
 import Simulate from './pages/Simulate';
 import AuditLog from './pages/AuditLog';
+import RequireAuth from './auth/RequireAuth';
 import { api } from './utils/api';
 
 export default function App() {
@@ -30,6 +31,7 @@ export default function App() {
   }, [fetchPending]);
 
   return (
+    <RequireAuth>
     <BrowserRouter>
       <Toaster
         position="top-right"
@@ -59,5 +61,6 @@ export default function App() {
         </main>
       </div>
     </BrowserRouter>
+    </RequireAuth>
   );
 }

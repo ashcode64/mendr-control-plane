@@ -382,6 +382,27 @@ CREATE TABLE IF NOT EXISTS route_program_history (
 CREATE INDEX IF NOT EXISTS idx_route_program_history_route
     ON route_program_history(source_service, target_service, endpoint, version DESC);
 
+-- ─── Route Change Outbox (transactional approve → edge sync) ───────────────
+-- Written in the same DB transaction as rule mutations; api-gateway OutboxRelay
+-- polls and guarantees recompile + snapshot publish even if Redis pub/sub is lost.
+CREATE TABLE IF NOT EXISTS route_change_outbox (
+    id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    tenant_id       UUID NOT NULL,
+    scope           VARCHAR(20) NOT NULL DEFAULT 'ROUTE',  -- ROUTE | TARGET_SERVICE
+    source_service  VARCHAR(255),
+    target_service  VARCHAR(255) NOT NULL,
+    endpoint        VARCHAR(512),
+    reason          VARCHAR(255),
+    created_at      TIMESTAMP NOT NULL DEFAULT NOW(),
+    processed_at    TIMESTAMP,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_route_change_outbox_unprocessed
+    ON route_change_outbox (created_at)
+    WHERE processed_at IS NULL;
+
 -- ─── Auth Secrets (references only — actual secrets stay in k8s/env) ──────
 -- Stores which env var / k8s secret holds the credential for each service.
 -- The gateway resolves the actual value at runtime from env, never stored here.

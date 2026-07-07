@@ -3,13 +3,16 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: selfhealing
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: secret
+      POSTGRES_USER: ${POSTGRES_SUPERUSER:-admin}
+      # Superuser password. Override in every non-dev environment via .env / secrets.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-secret}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
+      # Runs after init.sql ("init_v2_*" sorts after "init.sql"): multi-tenancy + RLS + app_user
+      - ./infra/init_v2_multitenancy.sql:/docker-entrypoint-initdb.d/init_v2_multitenancy.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s
@@ -31,13 +34,21 @@ services:
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
+      KAFKA_OPTS: "-Dzookeeper.4lw.commands.whitelist=ruok,mntr,stat"
     ports:
       - "2181:2181"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
     environment:
@@ -62,14 +73,20 @@ services:
     environment:
       SERVER_PORT: 8080
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      # Non-superuser role so Postgres RLS is actually enforced (superusers bypass it).
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SERVICES_AI_ANALYSIS: http://ai-analysis-service:8082
       SERVICES_RULE_ENGINE: http://rule-engine:8084
       MENDR_DOCKER_HOST_REWRITE: host.docker.internal
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # Auth (off by default for incremental rollout). Set JWKS URI to enable WorkOS JWT.
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,11 +102,18 @@ services:
       - "8082:8082"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # Auth: WorkOS JWT for the dashboard (/api/analysis), shared internal key for /mcp.
+      # enforce=false keeps endpoints open while still binding tenant context.
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
+      MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,6 +130,14 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
       MAX_REFINE_ITERATIONS: "3"
+      # Auth + tenant propagation to the MCP surface, CORS lockdown, abuse controls.
+      GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
+      MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+      MENDR_CHAT_RATE_LIMIT_PER_MIN: ${MENDR_CHAT_RATE_LIMIT_PER_MIN:-20}
     depends_on:
       ai-analysis-service:
         condition: service_started
@@ -117,8 +149,8 @@ services:
       - "8083:8083"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     depends_on:
       postgres:
@@ -133,10 +165,17 @@ services:
       - "8084:8084"
     environment:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/selfhealing
-      SPRING_DATASOURCE_USERNAME: admin
-      SPRING_DATASOURCE_PASSWORD: secret
+      SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
+      SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_DATA_REDIS_HOST: redis
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # Auth: WorkOS JWT for the dashboard (/api/rules), shared internal key for machines.
+      MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
+      MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
+      MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
+      MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
+      MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,88 @@
+name: security
+
+# Supply-chain + code security scanning for the control plane.
+on:
+  push:
+    branches: [master, "feat/**"]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"   # weekly, catches newly-disclosed CVEs in pinned deps
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  secret-scan:
+    name: Secret scanning (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  vuln-scan:
+    name: Dependency + IaC scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          # Vulnerabilities in deps + secrets + Dockerfile/compose misconfig.
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+  python-audit:
+    name: Python deps (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pip-audit
+      - run: pip-audit -r conversation-engine/requirements.txt --strict
+
+  npm-audit:
+    name: Frontend deps (npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - working-directory: frontend
+        run: npm audit --audit-level=high || true   # report, do not block yet
+
+  codeql-java:
+    name: SAST (CodeQL - Java)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Build modules
+        run: |
+          for m in api-gateway ai-analysis-service rule-engine notification-service; do
+            (cd "$m" && mvn -B -q -DskipTests compile)
+          done
+      - uses: github/codeql-action/analyze@v3

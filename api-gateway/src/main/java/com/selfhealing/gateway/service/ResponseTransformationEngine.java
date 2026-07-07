@@ -9,7 +9,6 @@ import com.selfhealing.gateway.util.TypeCoercer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -153,7 +152,8 @@ public class ResponseTransformationEngine {
 
     @SuppressWarnings("unchecked")
     private List<ResponseTransformationRule> getActiveRules(String serviceA, String serviceB, String endpoint) {
-        String cacheKey = CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint;
+        String cacheKey = com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint);
         Object cached = redisTemplate.opsForValue().get(cacheKey);
         if (cached != null) {
             try {
@@ -170,12 +170,18 @@ public class ResponseTransformationEngine {
     }
 
     public void evictCache(String serviceA, String serviceB, String endpoint) {
-        redisTemplate.delete(CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint);
+        redisTemplate.delete(com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                CACHE_PREFIX + serviceA + ":" + serviceB + ":" + endpoint));
         routeChangedPublisher.publishRoute(serviceA, serviceB, endpoint);
     }
 
-    @Scheduled(fixedDelay = 300_000)
-    public void expireRules() {
+    /**
+     * Expire TTL-based response transformation rules for the current tenant
+     * context. Scheduling is owned by {@link RuleExpirySweeper}.
+     *
+     * @return number of rules expired
+     */
+    public int expireRules() {
         List<ResponseTransformationRule> expired = ruleRepository.findExpiredRules(LocalDateTime.now());
         for (ResponseTransformationRule rule : expired) {
             rule.setActive(false);
@@ -183,5 +189,6 @@ public class ResponseTransformationEngine {
             evictCache(rule.getServiceA(), rule.getServiceB(), rule.getEndpoint());
         }
         if (!expired.isEmpty()) log.info("Expired {} response transformation rules", expired.size());
+        return expired.size();
     }
 }

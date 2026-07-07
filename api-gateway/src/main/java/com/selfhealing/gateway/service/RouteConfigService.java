@@ -71,8 +71,18 @@ public class RouteConfigService {
         return sourceService + ":" + targetService + ":" + endpoint;
     }
 
+    /**
+     * Tenant-namespaced L1 cache key. The in-process Caffeine cache is shared by
+     * all tenants in this JVM, so the cache key must carry the tenant to prevent
+     * one tenant reading another's assembled RouteConfig.
+     */
+    private static String cacheKey(String sourceService, String targetService, String endpoint) {
+        return com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                routeKey(sourceService, targetService, endpoint));
+    }
+
     public RouteConfig get(String sourceService, String targetService, String endpoint) {
-        String key = routeKey(sourceService, targetService, endpoint);
+        String key = cacheKey(sourceService, targetService, endpoint);
         RouteConfig cached = l1Cache.getIfPresent(key);
         if (cached != null) {
             return cached;
@@ -83,19 +93,25 @@ public class RouteConfigService {
     }
 
     public void evictRoute(String sourceService, String targetService, String endpoint) {
-        l1Cache.invalidate(routeKey(sourceService, targetService, endpoint));
+        l1Cache.invalidate(cacheKey(sourceService, targetService, endpoint));
     }
 
     public void evictByTargetService(String targetService) {
-        l1Cache.asMap().keySet().removeIf(key -> key.contains(":" + targetService + ":"));
+        // Only evict the current tenant's entries for this target service.
+        String tenantPrefix = com.selfhealing.gateway.tenant.TenantKeys.prefix();
+        l1Cache.asMap().keySet().removeIf(
+                key -> key.startsWith(tenantPrefix) && key.contains(":" + targetService + ":"));
     }
 
     public void evictAll() {
-        l1Cache.invalidateAll();
+        // Invalidation is scoped to the current tenant; only drop this tenant's keys.
+        String tenantPrefix = com.selfhealing.gateway.tenant.TenantKeys.prefix();
+        l1Cache.asMap().keySet().removeIf(key -> key.startsWith(tenantPrefix));
     }
 
     /**
-     * Handles pub/sub invalidation messages.
+     * Handles pub/sub invalidation messages (payload already tenant-decoded by
+     * the subscriber, with TenantContext bound).
      * Keys: full route key, {@code target:{serviceName}}, or {@code *} for all.
      */
     public void handleInvalidationMessage(String message) {
@@ -108,7 +124,7 @@ public class RouteConfigService {
             evictByTargetService(message.substring("target:".length()));
             return;
         }
-        l1Cache.invalidate(message);
+        l1Cache.invalidate(com.selfhealing.gateway.tenant.TenantKeys.scoped(message));
     }
 
     private RouteConfig assemble(String sourceService, String targetService, String endpoint) {

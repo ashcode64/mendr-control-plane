@@ -34,6 +34,9 @@ public class RouteConfigSnapshot {
      *  the Java proxy path handles response contract checking synchronously. */
     private boolean syncValidation;
 
+    /** sha256 of the merged materialized program; edges may compare for drift detection. */
+    private String programHash;
+
     private String authType;
     private String authHeaderName;
 

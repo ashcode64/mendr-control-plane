@@ -1,7 +1,0 @@
-com/selfhealing/notification/tenant/MultiTenancyProperties.class
-com/selfhealing/notification/tenant/TenantAwareDataSource$ResetOnCloseHandler.class
-com/selfhealing/notification/tenant/TenantRecordInterceptor.class
-com/selfhealing/notification/tenant/TenantKafkaConfig.class
-com/selfhealing/notification/tenant/TenantContext.class
-com/selfhealing/notification/tenant/TenantAwareDataSource.class
-com/selfhealing/notification/tenant/DataSourceConfig.class

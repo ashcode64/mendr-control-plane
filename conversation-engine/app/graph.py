@@ -19,6 +19,7 @@ class GraphState(TypedDict, total=False):
     user_message: str
     context: dict
     cases: list
+    tenant_id: Optional[str]
     candidate: Optional[dict]
     rationale: str
     assistant_text: str
@@ -34,11 +35,12 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     async def load_context(state: GraphState) -> dict:
         ctx = state.get("context") or {}
         cases = list(state.get("cases") or [])
+        tmcp = mcp.for_tenant(state.get("tenant_id"))
         # Best-effort: pull a registered example payload to drive simulation.
         svc, ep = ctx.get("service"), ctx.get("endpoint")
         if svc and ep and not cases:
             try:
-                contract = await mcp.get_contract(svc, ep, ctx.get("direction", "REQUEST"))
+                contract = await tmcp.get_contract(svc, ep, ctx.get("direction", "REQUEST"))
                 for ex in (contract.get("examples") or [])[:3]:
                     payload = ex.get("payload")
                     if isinstance(payload, dict):
@@ -58,7 +60,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
         }
 
     async def verify(state: GraphState) -> dict:
-        v = await mcp.verify_program(state["candidate"])
+        v = await mcp.for_tenant(state.get("tenant_id")).verify_program(state["candidate"])
         # Capture counterexamples HERE (a node return), not in the routing function —
         # LangGraph only persists state from node returns, so stashing prior_errors in
         # the conditional edge would be lost and the refine loop would re-propose blind.
@@ -66,7 +68,8 @@ def build_graph(proposer: Proposer, mcp: McpClient):
         return {"verification": v, "prior_errors": errors}
 
     async def simulate(state: GraphState) -> dict:
-        report = await mcp.simulate_transform(state["candidate"], state.get("cases") or [])
+        report = await mcp.for_tenant(state.get("tenant_id")).simulate_transform(
+            state["candidate"], state.get("cases") or [])
         return {"simulation": report, "status": "ready"}
 
     async def present(state: GraphState) -> dict:

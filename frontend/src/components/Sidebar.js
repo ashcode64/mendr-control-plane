@@ -1,5 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
+import UserMenu from '../auth/UserMenu';
 
 const NAV = [
   { to: '/',         icon: '⬡',  label: 'Overview'      },
@@ -53,6 +54,8 @@ export default function Sidebar({ pendingCount = 0 }) {
           <div style={{ fontSize: 11, color: 'var(--accent-green)', fontWeight: 600 }}>All Services Online</div>
         </div>
       </div>
+
+      <UserMenu />
     </aside>
   );
 }

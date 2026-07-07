@@ -21,6 +21,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.async.DeferredResult;
 
+import com.selfhealing.gateway.tenant.TenantContext;
+import com.selfhealing.gateway.tenant.TenantKeys;
+
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -28,7 +31,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -43,6 +48,11 @@ public class RouteConfigSnapshotPublisher {
     public static final String REDIS_KEY_PREFIX = "mendr:routeconfig:";
     static final String SYNC_VERSION_KEY = "mendr:routeconfig:sync-version";
 
+    /** Physical, tenant-namespaced Redis key for the per-tenant sync version. */
+    private static String syncVersionKey() {
+        return TenantKeys.scoped(SYNC_VERSION_KEY);
+    }
+
     private final RouteConfigService routeConfigService;
     private final RouteProgramService routeProgramService;
     private final InterServiceRouteDiscovery routeDiscovery;
@@ -50,13 +60,29 @@ public class RouteConfigSnapshotPublisher {
     private final ObjectMapper objectMapper;
     private final GatewayInternalProperties internalProperties;
     private final GatewayOpenRestyProperties openRestyProperties;
+    private final RouteSyncMetrics syncMetrics;
 
     /** Edge capability token: advertises support for snapshot v2 {@code ops[]} (MendrScript). */
     public static final String CAP_V2 = "v2";
 
     private final Object pendingSyncLock = new Object();
-    private final List<PendingSync> pendingSyncs = new CopyOnWriteArrayList<>();
-    private final Set<String> knownRouteKeys = new HashSet<>();
+
+    // Per-tenant sync state: each tenant gets its own waiter list and known-key
+    // set so one tenant's publish never wakes another's edge or mis-computes
+    // removals against a different tenant's route set. Each waiter carries the
+    // edge-advertised capabilities (v1/v2) so the payload is tailored per edge.
+    private final Map<UUID, List<PendingSync>> pendingSyncsByTenant = new ConcurrentHashMap<>();
+    private final Map<UUID, Set<String>> knownRouteKeysByTenant = new ConcurrentHashMap<>();
+
+    private List<PendingSync> pendingSyncs() {
+        return pendingSyncsByTenant.computeIfAbsent(
+                TenantContext.currentOrDefault(), k -> new CopyOnWriteArrayList<>());
+    }
+
+    private Set<String> knownRouteKeys() {
+        return knownRouteKeysByTenant.computeIfAbsent(
+                TenantContext.currentOrDefault(), k -> new HashSet<>());
+    }
 
     /** A long-poll waiter together with the capabilities the requesting edge advertised. */
     private record PendingSync(Set<String> caps,
@@ -104,7 +130,7 @@ public class RouteConfigSnapshotPublisher {
     }
 
     public long currentConfigVersion() {
-        String val = stringRedisTemplate.opsForValue().get(SYNC_VERSION_KEY);
+        String val = stringRedisTemplate.opsForValue().get(syncVersionKey());
         if (val == null || val.isBlank()) {
             return 0L;
         }
@@ -145,6 +171,8 @@ public class RouteConfigSnapshotPublisher {
                 RouteConfig config = routeConfigService.get(
                         triple.source(), triple.target(), triple.endpoint());
                 RouteConfigSnapshot snapshot = toSnapshot(config);
+                routeProgramService.ensureFreshMaterializedProgram(
+                        triple.source(), triple.target(), triple.endpoint());
                 overlayMaterializedProgram(snapshot, triple.source(), triple.target(), triple.endpoint());
                 snapshot.setSyncValidation(isSyncValidationRoute(
                         triple.source(), triple.target(), triple.endpoint()));
@@ -174,6 +202,7 @@ public class RouteConfigSnapshotPublisher {
 
         List<String> removed = new ArrayList<>();
         synchronized (pendingSyncLock) {
+            Set<String> knownRouteKeys = knownRouteKeys();
             for (String key : knownRouteKeys) {
                 // Only remove a key when the route is genuinely gone from discovery —
                 // never merely because this run failed to (re)build its snapshot.
@@ -206,30 +235,69 @@ public class RouteConfigSnapshotPublisher {
                 deferred.setResult(ResponseEntity.ok(buildFullSyncPayload(caps)));
                 return;
             }
-            pendingSyncs.add(new PendingSync(caps == null ? Set.of() : caps, deferred));
+            pendingSyncs().add(new PendingSync(caps == null ? Set.of() : caps, deferred));
         }
     }
 
     public void publishRoute(String sourceService, String targetService, String endpoint) {
+        republishRouteInternal(sourceService, targetService, endpoint, false);
+    }
+
+    /** Publish without bumping sync version (caller bumps once after a batch). */
+    public boolean publishRouteWithoutBump(String sourceService, String targetService, String endpoint) {
+        return republishRouteInternal(sourceService, targetService, endpoint, false);
+    }
+
+    /**
+     * Recompile, publish a single route snapshot, and bump the sync version so
+     * long-polling edges are notified. Returns false when publish was skipped or failed.
+     */
+    public boolean republishRoute(String sourceService, String targetService, String endpoint) {
+        return republishRouteInternal(sourceService, targetService, endpoint, true);
+    }
+
+    /** Bump the per-tenant sync version and wake long-polling edges. */
+    public void bumpSyncVersionAndNotify() {
+        bumpVersionAndNotifySyncWaiters();
+    }
+
+    /**
+     * Republish all routes for a target service, then bump sync version once if any succeeded.
+     */
+    public boolean republishForService(String serviceName) {
+        boolean anyPublished = false;
+        for (RouteTriple r : routeDiscovery.discoverForService(serviceName)) {
+            anyPublished |= republishRouteInternal(r.source(), r.target(), r.endpoint(), false);
+        }
+        if (anyPublished) {
+            bumpVersionAndNotifySyncWaiters();
+        }
+        return anyPublished;
+    }
+
+    private boolean republishRouteInternal(String sourceService, String targetService, String endpoint,
+                                           boolean bumpVersion) {
         // Recompile the materialized program first so the snapshot reflects the
         // current rule set atomically. If recompile fails its integrity guard
         // (empty program while active rules exist), DO NOT publish — leave the
         // last good snapshot in place rather than blanking a healed route.
+        boolean recompiled = false;
         try {
             routeProgramService.recompileRoute(sourceService, targetService, endpoint, "route-changed");
+            recompiled = true;
         } catch (RouteProgramService.RouteProgramIntegrityException e) {
             log.error("Skipping publish for {}:{}:{} — {}", sourceService, targetService, endpoint, e.getMessage());
-            return;
+            return false;
         } catch (com.selfhealing.gateway.transform.TransformProgramConflictException e) {
-            // Conflicting approved rules (plan §4.10) — keep the last-good materialized
-            // program live and skip publish; the conflicting proposal needs human
-            // supersede/merge rather than silently clobbering another approved rule.
             log.error("Skipping publish for {}:{}:{} — conflicting rules: {}",
                     sourceService, targetService, endpoint, e.getMessage());
-            return;
+            return false;
         } catch (Exception e) {
-            log.warn("Recompile failed for {}:{}:{} ({}). Publishing from assembled config.",
+            log.warn("Recompile failed for {}:{}:{} ({}). Attempting freshness repair before publish.",
                     sourceService, targetService, endpoint, e.getMessage());
+        }
+        if (!recompiled) {
+            routeProgramService.ensureFreshMaterializedProgram(sourceService, targetService, endpoint);
         }
         try {
             RouteConfig config = routeConfigService.get(sourceService, targetService, endpoint);
@@ -239,21 +307,28 @@ public class RouteConfigSnapshotPublisher {
             applyDockerHostRewrite(snapshot);
 
             String redisKey = redisKey(sourceService, targetService, endpoint);
+            String physicalKey = TenantKeys.scoped(redisKey);
             String json = objectMapper.writeValueAsString(snapshot);
 
             int ttlSeconds = internalProperties.getRouteConfigSnapshotTtlSeconds();
             if (ttlSeconds > 0) {
-                stringRedisTemplate.opsForValue().set(redisKey, json, Duration.ofSeconds(ttlSeconds));
+                stringRedisTemplate.opsForValue().set(physicalKey, json, Duration.ofSeconds(ttlSeconds));
             } else {
-                stringRedisTemplate.opsForValue().set(redisKey, json);
+                stringRedisTemplate.opsForValue().set(physicalKey, json);
             }
-            log.debug("Published route snapshot {}", redisKey);
+            log.debug("Published route snapshot {}", physicalKey);
+            if (bumpVersion) {
+                bumpVersionAndNotifySyncWaiters();
+            }
+            return true;
         } catch (JsonProcessingException e) {
             log.warn("Failed to serialize route snapshot for {}:{}:{} — {}",
                     sourceService, targetService, endpoint, e.getMessage());
+            return false;
         } catch (Exception e) {
             log.warn("Failed to publish route snapshot for {}:{}:{} — {}",
                     sourceService, targetService, endpoint, e.getMessage());
+            return false;
         }
     }
 
@@ -270,10 +345,12 @@ public class RouteConfigSnapshotPublisher {
     }
 
     private void bumpVersionAndNotifySyncWaiters() {
-        stringRedisTemplate.opsForValue().increment(SYNC_VERSION_KEY);
+        // Per-tenant sync-version counter (physical key is tenant-namespaced).
+        stringRedisTemplate.opsForValue().increment(syncVersionKey());
 
         List<PendingSync> waiters;
         synchronized (pendingSyncLock) {
+            List<PendingSync> pendingSyncs = pendingSyncs();
             waiters = new ArrayList<>(pendingSyncs);
             pendingSyncs.clear();
         }
@@ -329,8 +406,39 @@ public class RouteConfigSnapshotPublisher {
      */
     private void overlayMaterializedProgram(RouteConfigSnapshot snapshot,
                                             String source, String target, String endpoint) {
-        routeProgramService.find(source, target, endpoint).ifPresent(rp -> {
+        boolean activeRules = routeProgramService.hasActiveRules(source, target, endpoint);
+        int activeCount = activeRules ? routeProgramService.countActiveRules(source, target, endpoint) : 0;
+        routeProgramService.find(source, target, endpoint).ifPresentOrElse(rp -> {
+            if (activeRules && RouteProgramService.isMaterializedEmpty(rp)) {
+                syncMetrics.recordOverlayDrift();
+                log.warn("Overlay drift: route {}:{}:{} has {} active rule(s) but materialized program is empty — "
+                                + "keeping assembled program",
+                        source, target, endpoint, activeCount);
+                routeProgramService.ensureFreshMaterializedProgram(source, target, endpoint);
+                routeProgramService.find(source, target, endpoint).ifPresent(fresh -> {
+                    if (!RouteProgramService.isMaterializedEmpty(fresh)) {
+                        applyMaterializedOverlay(snapshot, fresh, source, target, endpoint);
+                    }
+                });
+                return;
+            }
+            applyMaterializedOverlay(snapshot, rp, source, target, endpoint);
+        }, () -> {
+            if (activeRules) {
+                syncMetrics.recordOverlayDrift();
+                log.warn("Overlay drift: route {}:{}:{} has {} active rule(s) but no materialized program row",
+                        source, target, endpoint, activeCount);
+                routeProgramService.ensureFreshMaterializedProgram(source, target, endpoint);
+                routeProgramService.find(source, target, endpoint).ifPresent(fresh ->
+                        applyMaterializedOverlay(snapshot, fresh, source, target, endpoint));
+            }
+        });
+    }
+
+    private void applyMaterializedOverlay(RouteConfigSnapshot snapshot, com.selfhealing.gateway.model.RouteProgram rp,
+                                          String source, String target, String endpoint) {
             try {
+                snapshot.setProgramHash(rp.getProgramHash());
                 if (rp.getRequestProgram() != null) {
                     snapshot.setRequestProgram(objectMapper.convertValue(
                             rp.getRequestProgram(), RouteConfigSnapshot.TransformProgramSnapshot.class));
@@ -343,7 +451,6 @@ public class RouteConfigSnapshotPublisher {
                 log.warn("Failed to overlay materialized program for {}:{}:{} — {}",
                         source, target, endpoint, e.getMessage());
             }
-        });
     }
 
     static RouteConfigSnapshot toSnapshot(RouteConfig config) {

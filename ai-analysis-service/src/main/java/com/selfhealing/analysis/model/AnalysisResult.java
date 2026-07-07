@@ -1,5 +1,6 @@
 package com.selfhealing.analysis.model;
 
+import com.selfhealing.analysis.tenant.TenantScoped;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -14,15 +15,19 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "analysis_results")
+@EntityListeners(com.selfhealing.analysis.tenant.TenantEntityListener.class)
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class AnalysisResult {
+public class AnalysisResult implements TenantScoped {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
+
+    @Column(name = "tenant_id")
+    private UUID tenantId;
 
     @Column(name = "failure_id")
     private UUID failureId;

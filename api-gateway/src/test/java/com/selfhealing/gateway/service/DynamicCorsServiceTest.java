@@ -90,7 +90,8 @@ class DynamicCorsServiceTest {
         corsService.syncDeclaredOrigins("payment-service", List.of("http://localhost:8090"));
 
         assertThat(stale.isActive()).isFalse();
-        verify(redisTemplate).delete("cors:payment-service:http://old-origin:9090");
+        verify(redisTemplate).delete(
+                "t:00000000-0000-0000-0000-000000000001:cors:payment-service:http://old-origin:9090");
         verify(routeChangedPublisher).publishTargetService("payment-service");
     }
 

@@ -22,3 +22,8 @@ spring:
         spring.json.trusted.packages: "*"
         spring.json.use.type.headers: false
         spring.json.value.default.type: "java.util.Map"
+
+mendr:
+  tenancy:
+    default-tenant-id: 00000000-0000-0000-0000-000000000001
+    fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}

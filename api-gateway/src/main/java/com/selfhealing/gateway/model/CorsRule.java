@@ -1,5 +1,6 @@
 package com.selfhealing.gateway.model;
 
+import com.selfhealing.gateway.tenant.TenantScoped;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -8,12 +9,16 @@ import java.util.UUID;
 
 @Entity
 @Table(name = "cors_rules")
+@EntityListeners(com.selfhealing.gateway.tenant.TenantEntityListener.class)
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
-public class CorsRule {
+public class CorsRule implements TenantScoped {
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     private UUID id;
+
+    @Column(name = "tenant_id")
+    private UUID tenantId;
 
     @Column(name = "target_service", nullable = false)
     private String targetService;

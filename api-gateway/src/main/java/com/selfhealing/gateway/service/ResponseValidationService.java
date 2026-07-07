@@ -77,8 +77,9 @@ public class ResponseValidationService {
     }
 
     private static String dedupKey(ValidateResponseRequest request) {
-        return DEDUP_KEY_PREFIX + request.getSourceService() + ":"
-                + request.getTargetService() + ":" + request.getEndpoint();
+        return com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                DEDUP_KEY_PREFIX + request.getSourceService() + ":"
+                + request.getTargetService() + ":" + request.getEndpoint());
     }
 
     private static String routeLabel(ValidateResponseRequest request) {

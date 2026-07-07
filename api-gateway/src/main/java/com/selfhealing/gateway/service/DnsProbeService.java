@@ -117,9 +117,10 @@ public class DnsProbeService {
         try {
             jdbcTemplate.update("""
                 INSERT INTO dns_probe_log
-                    (service_name, probed_url, http_status, reachable, response_time_ms, error_message)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (tenant_id, service_name, probed_url, http_status, reachable, response_time_ms, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
+                com.selfhealing.gateway.tenant.TenantContext.currentOrDefault(),
                 serviceName, url, result.httpStatus(), result.reachable(),
                 result.responseTimeMs(), result.errorMessage());
         } catch (Exception e) {

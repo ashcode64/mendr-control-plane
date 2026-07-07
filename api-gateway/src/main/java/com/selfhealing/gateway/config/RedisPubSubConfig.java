@@ -2,6 +2,8 @@ package com.selfhealing.gateway.config;
 
 import com.selfhealing.gateway.service.RouteConfigService;
 import com.selfhealing.gateway.service.RouteConfigSnapshotPublisher;
+import com.selfhealing.gateway.tenant.TenantContext;
+import com.selfhealing.gateway.tenant.TenantKeys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
@@ -46,8 +48,16 @@ public class RedisPubSubConfig {
 
         public void onMessage(String message) {
             log.debug("Received route-changed: {}", message);
-            routeConfigService.handleInvalidationMessage(message);
-            snapshotPublisher.handleInvalidationMessage(message);
+            // Re-establish the originating tenant from the message so DB reads
+            // (RLS) and Redis writes during republish are scoped correctly.
+            TenantKeys.TenantMessage decoded = TenantKeys.decodeMessage(message);
+            TenantContext.setTenantId(decoded.tenantId());
+            try {
+                routeConfigService.handleInvalidationMessage(decoded.payload());
+                snapshotPublisher.handleInvalidationMessage(decoded.payload());
+            } finally {
+                TenantContext.clear();
+            }
         }
     }
 }

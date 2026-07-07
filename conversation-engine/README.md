@@ -43,8 +43,36 @@ Events: `session`, `security`, `progress`, `result`, `done` (or `error`).
 
 ## Security
 
-- Immutable system prompt (never templated with user input).
-- User text and fetched context are treated as data, never instructions.
-- Input action-screening guardrail flags prompt-injection / deploy attempts.
-- No privileged capability: all actions go through MCP tools; the Java verifier is the
-  authority and runs again at deploy time.
+- **AuthN + tenancy:** `/chat/stream` authenticates the caller — a WorkOS JWT
+  (validated against `MENDR_AUTH_WORKOS_JWKS_URI`, tenant = the `org_id` claim) or
+  the shared `GATEWAY_INTERNAL_API_KEY` for machine callers. The resolved tenant is
+  bound to the request and forwarded to the MCP surface (`X-Tenant-Id`) so
+  RLS-scoped reads are correct. `MENDR_AUTH_ENFORCE=false` (default) keeps the
+  endpoint open for incremental rollout but still binds the tenant.
+- **CORS:** locked to `MENDR_CORS_ALLOWED_ORIGINS` (never `*`).
+- **Isolation:** in-memory sessions are namespaced by tenant.
+- **Abuse/cost controls (OWASP LLM10):** per-tenant + per-client rate limiting
+  (`MENDR_CHAT_RATE_LIMIT_PER_MIN`), bounded message/context size, bounded refine
+  iterations and `max_tokens`.
+- **Injection/leak controls (OWASP LLM01/LLM02):** input action-screening flags
+  prompt-injection / deploy attempts; assistant output is scrubbed of anything that
+  looks like a credential before it leaves the service.
+- Immutable system prompt (never templated with user input); user text and fetched
+  context are treated as data, never instructions.
+- **No privileged capability:** all actions go through MCP tools; the Java verifier
+  is the authority and runs again at deploy time (OWASP LLM06: complete mediation +
+  human-in-the-loop approval gate outside the model).
+
+### Environment
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `MENDR_AUTH_ENFORCE` | `false` | Require a valid credential on `/chat/stream`. |
+| `MENDR_AUTH_WORKOS_JWKS_URI` | _(unset)_ | WorkOS JWKS endpoint; enables JWT validation. |
+| `MENDR_AUTH_WORKOS_ISSUER` / `_AUDIENCE` | _(unset)_ | JWT issuer / audience checks. |
+| `MENDR_AUTH_WORKOS_ORG_CLAIM` | `org_id` | JWT claim mapped to the tenant. |
+| `GATEWAY_INTERNAL_API_KEY` | _(unset)_ | Shared internal key (machine callers + MCP auth). |
+| `MENDR_CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins. |
+| `MENDR_CHAT_RATE_LIMIT_PER_MIN` | `20` | Per-tenant+client request cap per minute. |
+| `MENDR_CHAT_MAX_MESSAGE_CHARS` | `8000` | Max user message size. |
+| `MENDR_TENANCY_DEFAULT_TENANT_ID` | `00000000-…-0001` | Default tenant for fallback. |

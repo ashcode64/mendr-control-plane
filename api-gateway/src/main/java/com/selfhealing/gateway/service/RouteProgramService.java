@@ -142,6 +142,133 @@ public class RouteProgramService {
         return routeProgramRepository.findBySourceServiceAndTargetServiceAndEndpoint(source, target, endpoint);
     }
 
+    /** Count of active, non-expired request + response rules for a route. */
+    public int countActiveRules(String source, String target, String endpoint) {
+        LocalDateTime now = LocalDateTime.now();
+        return transformationRuleRepository.findActiveNonExpiredForRoute(source, target, endpoint, now).size()
+                + responseTransformationRuleRepository.findActiveNonExpiredForRoute(source, target, endpoint, now).size();
+    }
+
+    public boolean hasActiveRules(String source, String target, String endpoint) {
+        return countActiveRules(source, target, endpoint) > 0;
+    }
+
+    /**
+     * True when active rules exist but the materialized row is missing, empty,
+     * rule-count mismatched, rule-id provenance mismatched, or compiled before
+     * the newest active rule update.
+     */
+    public boolean isDrifted(String source, String target, String endpoint) {
+        if (!hasActiveRules(source, target, endpoint)) {
+            return false;
+        }
+        Optional<RouteProgram> existing = find(source, target, endpoint);
+        if (existing.isEmpty() || isMaterializedEmpty(existing.get())) {
+            return true;
+        }
+        RouteProgram rp = existing.get();
+        if (rp.getRuleCount() != countActiveRules(source, target, endpoint)) {
+            return true;
+        }
+        if (isRuleProvenanceDrifted(source, target, endpoint, rp)) {
+            return true;
+        }
+        return isCompiledBeforeLatestRuleUpdate(source, target, endpoint, rp.getCompiledAt());
+    }
+
+    /**
+     * Recompile when the materialized row is drifted. Safe to call on every snapshot build.
+     */
+    public boolean ensureFreshMaterializedProgram(String source, String target, String endpoint) {
+        if (!isDrifted(source, target, endpoint)) {
+            return false;
+        }
+        try {
+            RecompileResult result = recompileRoute(source, target, endpoint, "freshness-check");
+            if (result.changed) {
+                log.warn("Repaired stale materialized program for {}:{}:{} ({} active rule(s))",
+                        source, target, endpoint, result.ruleCount);
+            }
+            return result.changed;
+        } catch (Exception e) {
+            log.warn("Freshness recompile failed for {}:{}:{} — {}", source, target, endpoint, e.getMessage());
+            return false;
+        }
+    }
+
+    static boolean isMaterializedEmpty(RouteProgram rp) {
+        if (rp == null) {
+            return true;
+        }
+        return isProgramMapEmpty(rp.getRequestProgram()) && isProgramMapEmpty(rp.getResponseProgram());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean isProgramMapEmpty(Map<String, Object> program) {
+        if (program == null || program.isEmpty()) {
+            return true;
+        }
+        Object empty = program.get("empty");
+        if (Boolean.TRUE.equals(empty)) {
+            return true;
+        }
+        Object ops = program.get("ops");
+        if (ops instanceof List<?> opList && !opList.isEmpty()) {
+            return false;
+        }
+        for (String key : List.of("renames", "defaults", "coercions", "removals", "moves",
+                "scales", "coalesce", "valueMaps", "dateFormats", "stripUnknown", "wrapArrays", "unwrapArrays")) {
+            Object val = program.get(key);
+            if (val instanceof Map<?, ?> m && !m.isEmpty()) {
+                return false;
+            }
+            if (val instanceof List<?> l && !l.isEmpty()) {
+                return false;
+            }
+            if (val instanceof java.util.Collection<?> c && !c.isEmpty()) {
+                return false;
+            }
+        }
+        return program.get("wrapKey") == null && program.get("unwrapKey") == null;
+    }
+
+    private boolean isRuleProvenanceDrifted(String source, String target, String endpoint, RouteProgram rp) {
+        LocalDateTime now = LocalDateTime.now();
+        var activeReqIds = new java.util.HashSet<>(transformationRuleRepository
+                .findActiveNonExpiredForRoute(source, target, endpoint, now)
+                .stream().map(TransformationRule::getId).toList());
+        var activeRespIds = new java.util.HashSet<>(responseTransformationRuleRepository
+                .findActiveNonExpiredForRoute(source, target, endpoint, now)
+                .stream().map(ResponseTransformationRule::getId).toList());
+        var storedReq = rp.getRequestRuleIds() == null ? java.util.Set.<UUID>of()
+                : new java.util.HashSet<>(rp.getRequestRuleIds());
+        var storedResp = rp.getResponseRuleIds() == null ? java.util.Set.<UUID>of()
+                : new java.util.HashSet<>(rp.getResponseRuleIds());
+        return !activeReqIds.equals(storedReq) || !activeRespIds.equals(storedResp);
+    }
+
+    private boolean isCompiledBeforeLatestRuleUpdate(String source, String target, String endpoint,
+                                                     LocalDateTime compiledAt) {
+        if (compiledAt == null) {
+            return true;
+        }
+        LocalDateTime latest = jdbcTemplate.queryForObject("""
+                SELECT MAX(latest) FROM (
+                    SELECT MAX(updated_at) AS latest FROM transformation_rules
+                    WHERE service_a = ? AND service_b = ? AND endpoint = ?
+                      AND is_active = true AND (expires_at IS NULL OR expires_at > NOW())
+                    UNION ALL
+                    SELECT MAX(updated_at) AS latest FROM response_transformation_rules
+                    WHERE service_a = ? AND service_b = ? AND endpoint = ?
+                      AND is_active = true AND (expires_at IS NULL OR expires_at > NOW())
+                ) t
+                """,
+                LocalDateTime.class,
+                source, target, endpoint,
+                source, target, endpoint);
+        return latest != null && compiledAt.isBefore(latest);
+    }
+
     // ─── helpers ─────────────────────────────────────────────────────────────
 
     private static List<UUID> ids(List<UUID> in) {
@@ -219,24 +346,27 @@ public class RouteProgramService {
         }
         UUID[] reqIds = rp.getRequestRuleIds() == null ? new UUID[0] : rp.getRequestRuleIds().toArray(new UUID[0]);
         UUID[] respIds = rp.getResponseRuleIds() == null ? new UUID[0] : rp.getResponseRuleIds().toArray(new UUID[0]);
+        UUID tenantId = rp.getTenantId() != null
+                ? rp.getTenantId() : com.selfhealing.gateway.tenant.TenantContext.currentOrDefault();
         jdbcTemplate.update(con -> {
             var ps = con.prepareStatement("""
                     INSERT INTO route_program_history
-                        (source_service, target_service, endpoint, request_program, response_program,
+                        (tenant_id, source_service, target_service, endpoint, request_program, response_program,
                          request_rule_ids, response_rule_ids, program_hash, version, compiled_by, compiled_at)
-                    VALUES (?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?::jsonb, ?::jsonb, ?, ?, ?, ?, ?, ?)
                     """);
-            ps.setString(1, rp.getSourceService());
-            ps.setString(2, rp.getTargetService());
-            ps.setString(3, rp.getEndpoint());
-            ps.setString(4, reqJson);
-            ps.setString(5, respJson);
-            ps.setArray(6, con.createArrayOf("uuid", reqIds));
-            ps.setArray(7, con.createArrayOf("uuid", respIds));
-            ps.setString(8, rp.getProgramHash());
-            ps.setLong(9, rp.getVersion());
-            ps.setString(10, rp.getCompiledBy());
-            ps.setObject(11, rp.getCompiledAt());
+            ps.setObject(1, tenantId);
+            ps.setString(2, rp.getSourceService());
+            ps.setString(3, rp.getTargetService());
+            ps.setString(4, rp.getEndpoint());
+            ps.setString(5, reqJson);
+            ps.setString(6, respJson);
+            ps.setArray(7, con.createArrayOf("uuid", reqIds));
+            ps.setArray(8, con.createArrayOf("uuid", respIds));
+            ps.setString(9, rp.getProgramHash());
+            ps.setLong(10, rp.getVersion());
+            ps.setString(11, rp.getCompiledBy());
+            ps.setObject(12, rp.getCompiledAt());
             return ps;
         });
     }

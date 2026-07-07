@@ -216,8 +216,9 @@ public class FailureIngestionService {
     }
 
     static String failureDedupKey(IngestFailureRequest request) {
-        return FAILURE_DEDUP_KEY_PREFIX + request.getSourceService() + ":"
-                + request.getTargetService() + ":" + request.getEndpoint();
+        return com.selfhealing.gateway.tenant.TenantKeys.scoped(
+                FAILURE_DEDUP_KEY_PREFIX + request.getSourceService() + ":"
+                + request.getTargetService() + ":" + request.getEndpoint());
     }
 
     private static String routeLabel(IngestFailureRequest request) {
