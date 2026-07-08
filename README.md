@@ -43,7 +43,10 @@ docker compose up -d --build
 
 ## Required environment
 
-- `ANTHROPIC_API_KEY`
+- `LLM_PROVIDER` — `anthropic` (default) or `gemini`. Set the API key for the active provider:
+  - Anthropic: `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL`
+  - Gemini: `GEMINI_API_KEY`, optional `GEMINI_MODEL` (default `gemini-2.0-flash`)
+- Use the **same** `LLM_PROVIDER` value for `ai-analysis-service` and `conversation-engine` so failure analysis and MendrScript chat use the same LLM backend.
 - `GATEWAY_INTERNAL_API_KEY` for trusted edge/control-plane calls and MendrScript
   chat persistence (`conversation-engine` → `ai-analysis-service` internal APIs).
   Set the same value in `.env` for `api-gateway`, `ai-analysis-service`, and

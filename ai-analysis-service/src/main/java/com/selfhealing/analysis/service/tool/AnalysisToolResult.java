@@ -18,7 +18,7 @@ public record AnalysisToolResult(
         double confidence,
         String suggestedPermanentFix) {
 
-    public enum Source { CLAUDE, MOCK }
+    public enum Source { CLAUDE, GEMINI, MOCK }
 
     /**
      * Splits a tool {@code input} into the transformation-rule map (typed params)

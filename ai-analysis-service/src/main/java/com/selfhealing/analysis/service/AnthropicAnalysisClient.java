@@ -20,31 +20,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Calls Claude with Anthropic tool-use. Output is always a {@code tool_use} block,
- * so the rule type is the tool name and the parameters are schema-validated input —
- * no free-text JSON to scrape. Three tiers by cost:
- *
- * <ul>
- *   <li>Tier 1 (deterministic): force the single matching tool — type can't be wrong.</li>
- *   <li>Tier 2 (known category): offer category-scoped tools, {@code tool_choice=any}.</li>
- *   <li>Tier 3 (UNKNOWN / low-conf): bounded agent loop with read-only context tools,
- *       then a forced {@code propose_*} tool.</li>
- * </ul>
+ * Calls Claude with Anthropic tool-use. Output is always a {@code tool_use} block.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class ClaudeApiClient {
+public class AnthropicAnalysisClient implements LlmAnalysisClient {
 
     private final WebClient.Builder webClientBuilder;
     private final ObjectMapper objectMapper;
     private final ContextToolExecutor contextToolExecutor;
 
+    @Value("${llm.provider:anthropic}")
+    private String llmProvider;
+
     @Value("${anthropic.api-key:}")
     private String apiKey;
-
-    @Value("${anthropic.api-url:https://api.anthropic.com/v1/messages}")
-    private String apiUrl;
 
     @Value("${anthropic.model:claude-haiku-4-5-20251001}")
     private String model;
@@ -57,17 +48,17 @@ public class ClaudeApiClient {
 
     @PostConstruct
     void logAnthropicConfigAtStartup() {
+        if (!"anthropic".equalsIgnoreCase(llmProvider)) {
+            return;
+        }
         if (apiKey == null || apiKey.isBlank()) {
-            log.warn("ANTHROPIC_API_KEY not configured at startup — mock analysis will be used");
+            log.warn("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set — mock analysis will be used");
         } else {
-            log.info("Anthropic API ready at startup (model={})", model);
+            log.info("LLM_PROVIDER=anthropic active (model={})", model);
         }
     }
 
-    /**
-     * Run analysis for the given structured context and return a typed result.
-     * Picks the tier from the context (deterministic finding / known category / UNKNOWN).
-     */
+    @Override
     public AnalysisToolResult analyze(String systemPrompt,
                                       StructuredFailureContext structuredContext,
                                       FailureAnalysisContext ctx) {
@@ -85,25 +76,23 @@ public class ClaudeApiClient {
             if (deterministic) {
                 String toolName = AnalysisTools.toolForRuleType(finding.kind());
                 if (toolName == null) toolName = forcedToolForCategory(category);
-                return singleShot(systemPrompt, userJson, category,
+                return singleShot(systemPrompt, userJson,
                         List.of(AnalysisTools.toolByName(toolName)),
                         Map.of("type", "tool", "name", toolName));
             }
             if (isKnownCategory(category)) {
-                return singleShot(systemPrompt, userJson, category,
+                return singleShot(systemPrompt, userJson,
                         AnalysisTools.toolsForCategory(category),
                         Map.of("type", "any"));
             }
             return agentLoop(systemPrompt, userJson, category);
         } catch (Exception e) {
-            log.error("Claude tool-use call failed: {}", e.getMessage(), e);
+            log.error("Anthropic tool-use call failed: {}", e.getMessage(), e);
             return mock(structuredContext, ctx);
         }
     }
 
-    // ── Tier 1 / 2: single round trip ────────────────────────────────────────────
-
-    private AnalysisToolResult singleShot(String systemPrompt, String userJson, String category,
+    private AnalysisToolResult singleShot(String systemPrompt, String userJson,
                                           List<Map<String, Object>> tools, Map<String, Object> toolChoice) {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", userJson));
@@ -116,8 +105,6 @@ public class ClaudeApiClient {
         return toResult(toolUse);
     }
 
-    // ── Tier 3: bounded agent loop with read-only context tools ─────────────────
-
     private AnalysisToolResult agentLoop(String systemPrompt, String userJson, String category) {
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(Map.of("role", "user", "content", userJson));
@@ -127,7 +114,6 @@ public class ClaudeApiClient {
 
         for (int turn = 0; turn < maxAgentTurns; turn++) {
             boolean lastTurn = turn == maxAgentTurns - 1;
-            // On the final turn, force a propose_* decision; otherwise let it explore or decide.
             Map<String, Object> toolChoice = lastTurn
                     ? Map.of("type", "any")
                     : Map.of("type", "auto");
@@ -142,14 +128,12 @@ public class ClaudeApiClient {
             }
 
             if (toolUses.isEmpty()) {
-                // No tool call at all — nudge once more or break.
                 messages.add(assistantContent(response));
                 messages.add(Map.of("role", "user",
                         "content", "Call one propose_* tool now with your best fix."));
                 continue;
             }
 
-            // Execute context tools and feed results back.
             messages.add(assistantContent(response));
             List<Map<String, Object>> toolResults = new ArrayList<>();
             for (JsonNode tu : toolUses) {
@@ -165,15 +149,12 @@ public class ClaudeApiClient {
             messages.add(Map.of("role", "user", "content", toolResults));
         }
 
-        // Exhausted turns without a proposal: force one explicit final call.
         JsonNode response = callApi(systemPrompt, messages,
                 AnalysisTools.toolsForCategory(category), Map.of("type", "any"));
         JsonNode toolUse = firstToolUse(response);
         if (toolUse == null) throw new IllegalStateException("Agent loop ended with no tool_use");
         return toResult(toolUse);
     }
-
-    // ── HTTP ──────────────────────────────────────────────────────────────────────
 
     private JsonNode callApi(String systemPrompt, List<Map<String, Object>> messages,
                              List<Map<String, Object>> tools, Map<String, Object> toolChoice) {
@@ -211,8 +192,6 @@ public class ClaudeApiClient {
         Map<String, Object> input = toMap(toolUse.path("input"));
         return AnalysisToolResult.fromToolInput(AnalysisToolResult.Source.CLAUDE, model, name, input);
     }
-
-    // ── Response helpers ────────────────────────────────────────────────────────
 
     private JsonNode firstToolUse(JsonNode response) {
         for (JsonNode block : response.path("content")) {
@@ -274,8 +253,6 @@ public class ClaudeApiClient {
             default -> "propose_field_rename";
         };
     }
-
-    // ── Mock fallback: same typed result, no API key needed ──────────────────────
 
     AnalysisToolResult mock(StructuredFailureContext sc, FailureAnalysisContext ctx) {
         return MockAnalysis.build(sc, ctx, model);

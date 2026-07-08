@@ -49,6 +49,16 @@ async def lifespan(_app: FastAPI):
             "persist correctly (conversation-engine cannot authenticate to "
             "ai-analysis-service internal APIs)"
         )
+    if settings.llm_provider == "gemini":
+        if settings.gemini_api_key:
+            logger.info("LLM_PROVIDER=gemini active (model=%s)", settings.gemini_model)
+        else:
+            logger.warning("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set — synthesis disabled")
+    else:
+        if settings.anthropic_api_key:
+            logger.info("LLM_PROVIDER=anthropic active (model=%s)", settings.anthropic_model)
+        else:
+            logger.warning("LLM_PROVIDER=anthropic but ANTHROPIC_API_KEY is not set — synthesis disabled")
     yield
 
 
@@ -173,7 +183,7 @@ async def chat_stream(
             "assistantText": assistant_text,
             "verification": last.get("verification"),
             "simulation": last.get("simulation"),
-            "model": settings.anthropic_model,
+            "model": settings.active_llm_model,
             "securityFlags": flags,
             "deployable": deployable,
             "persisted": True,
@@ -190,7 +200,7 @@ async def chat_stream(
                             "content": assistant_text or "Verified program proposed.",
                             "metadata": {
                                 "status": status,
-                                "model": settings.anthropic_model,
+                                "model": settings.active_llm_model,
                                 "verified": bool((last.get("verification") or {}).get("valid")),
                                 "deployable": deployable,
                                 "securityFlags": flags,
@@ -212,7 +222,7 @@ async def chat_stream(
         audit.info(
             "chat.result tenant=%s session=%s status=%s verified=%s deployable=%s model=%s",
             tenant_id, sid, status,
-            (last.get("verification") or {}).get("valid"), deployable, settings.anthropic_model,
+            (last.get("verification") or {}).get("valid"), deployable, settings.active_llm_model,
         )
 
         yield _sse("result", result_payload)

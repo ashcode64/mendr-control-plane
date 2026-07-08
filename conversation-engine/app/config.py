@@ -32,8 +32,14 @@ class Settings:
     # not an unauthenticated caller. Mirrors GATEWAY_INTERNAL_API_KEY on the gateway.
     internal_api_key: str = os.getenv("GATEWAY_INTERNAL_API_KEY", "")
 
+    llm_provider: str = os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
+
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
+
+    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+
     max_tokens: int = int(os.getenv("MAX_TOKENS", "2000"))
 
     # Bounded refine loop: how many times the LLM may revise after a verify failure.
@@ -65,6 +71,12 @@ class Settings:
     max_message_chars: int = int(os.getenv("MENDR_CHAT_MAX_MESSAGE_CHARS", "8000"))
     max_context_chars: int = int(os.getenv("MENDR_CHAT_MAX_CONTEXT_CHARS", "16000"))
     rate_limit_per_min: int = int(os.getenv("MENDR_CHAT_RATE_LIMIT_PER_MIN", "20"))
+
+    @property
+    def active_llm_model(self) -> str:
+        if self.llm_provider == "gemini":
+            return self.gemini_model
+        return self.anthropic_model
 
 
 settings = Settings()

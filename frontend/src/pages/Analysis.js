@@ -517,7 +517,7 @@ export default function Analysis({ onApproval }) {
       <div style={S.header}>
         <div>
           <div style={S.title}>AI Analysis</div>
-          <div style={S.sub}>Claude-powered schema mismatch analysis and transformation suggestions</div>
+          <div style={S.sub}>AI-powered schema mismatch analysis and transformation suggestions</div>
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           {pendingCount > 0 && (
@@ -554,7 +554,7 @@ export default function Analysis({ onApproval }) {
 
       <div style={S.card}>
         {loading ? <Spinner /> : filtered.length === 0 ? (
-          <EmptyState icon="🧠" text="No analyses yet" sub="Failures are automatically analyzed by Claude AI" />
+          <EmptyState icon="🧠" text="No analyses yet" sub="Failures are automatically analyzed by AI" />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>

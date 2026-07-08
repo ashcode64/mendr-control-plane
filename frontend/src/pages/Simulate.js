@@ -122,7 +122,7 @@ export default function Simulate() {
         {[
           ['1', '⚡', 'Failure Detected', '#ff4757'],
           ['2', '📡', 'Kafka Event', '#f5a623'],
-          ['3', '🧠', 'Claude AI Analysis', '#8b5cf6'],
+          ['3', '🧠', 'AI Analysis', '#8b5cf6'],
           ['4', '👤', 'Human Approval', '#4f7cff'],
           ['5', '⚙️', 'Rule Deployed', '#10e88a'],
           ['6', '✅', 'Service Healed', '#10e88a'],

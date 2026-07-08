@@ -79,6 +79,6 @@ public class AnalysisResult implements TenantScoped {
     }
 
     public enum AnalysisSource {
-        CLAUDE, MOCK
+        CLAUDE, GEMINI, MOCK
     }
 }

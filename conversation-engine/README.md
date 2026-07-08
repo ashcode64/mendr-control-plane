@@ -25,7 +25,11 @@ load_context → propose → verify → (valid ? simulate : refine→propose, bo
 
 ```bash
 pip install -r requirements.txt
-MCP_BASE_URL=http://localhost:8082 ANTHROPIC_API_KEY=... \
+# Anthropic (default):
+MCP_BASE_URL=http://localhost:8082 LLM_PROVIDER=anthropic ANTHROPIC_API_KEY=... \
+  uvicorn app.main:app --port 8085
+# Gemini:
+MCP_BASE_URL=http://localhost:8082 LLM_PROVIDER=gemini GEMINI_API_KEY=... \
   uvicorn app.main:app --port 8085
 ```
 
@@ -72,6 +76,11 @@ Events: `session`, `security`, `progress`, `result`, `done` (or `error`).
 | `MENDR_AUTH_WORKOS_ISSUER` / `_AUDIENCE` | _(unset)_ | JWT issuer / audience checks. |
 | `MENDR_AUTH_WORKOS_ORG_CLAIM` | `org_id` | JWT claim mapped to the tenant. |
 | `GATEWAY_INTERNAL_API_KEY` | _(unset)_ | Shared internal key (machine callers + MCP auth). |
+| `LLM_PROVIDER` | `anthropic` | `anthropic` or `gemini` — must match `ai-analysis-service`. |
+| `ANTHROPIC_API_KEY` | _(unset)_ | Required when `LLM_PROVIDER=anthropic`. |
+| `ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Anthropic model id. |
+| `GEMINI_API_KEY` | _(unset)_ | Required when `LLM_PROVIDER=gemini`. |
+| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini model id. |
 | `MENDR_CORS_ALLOWED_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins. |
 | `MENDR_CHAT_RATE_LIMIT_PER_MIN` | `20` | Per-tenant+client request cap per minute. |
 | `MENDR_CHAT_MAX_MESSAGE_CHARS` | `8000` | Max user message size. |

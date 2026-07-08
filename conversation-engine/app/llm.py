@@ -1,30 +1,35 @@
 """LLM proposer: turns a natural-language request into a MendrScript AST via strict
 tool-use. Strict tool-use is constrained decoding — the model's output is forced to the
-propose_program schema at inference time, so it cannot emit an opcode/arg outside the
-closed vocabulary. The Java verifier remains the authority.
+propose_program schema at inference time.
 
-If no ANTHROPIC_API_KEY is configured, a deterministic no-model stub is used so the
-service still runs end-to-end in dev (it just declines to synthesize).
+Provider is selected via LLM_PROVIDER (anthropic | gemini). If no API key is configured
+for the active provider, a deterministic no-model stub is used.
 """
 from __future__ import annotations
 
 from .config import settings
-from .prompts import PROPOSE_PROGRAM_TOOL, SYSTEM_PROMPT, SCHEMA_VERSION
+from .llm_anthropic import AnthropicProposerBackend
+from .llm_gemini import GeminiProposerBackend
+
+
+def _not_configured_message() -> str:
+    if settings.llm_provider == "gemini":
+        return ("LLM is not configured (set GEMINI_API_KEY with LLM_PROVIDER=gemini). "
+                "I can verify and simulate a program you paste, but I cannot synthesize one here.")
+    return ("LLM is not configured (set ANTHROPIC_API_KEY with LLM_PROVIDER=anthropic). "
+            "I can verify and simulate a program you paste, but I cannot synthesize one here.")
 
 
 class Proposer:
     def __init__(self):
-        self._client = None
-        if settings.anthropic_api_key:
-            try:
-                import anthropic
-                self._client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-            except Exception:  # pragma: no cover - SDK optional in dev
-                self._client = None
+        if settings.llm_provider == "gemini":
+            self._backend = GeminiProposerBackend()
+        else:
+            self._backend = AnthropicProposerBackend()
 
     @property
     def enabled(self) -> bool:
-        return self._client is not None
+        return self._backend.enabled
 
     async def propose(
         self,
@@ -33,42 +38,11 @@ class Proposer:
         prior_errors: list[str],
         prior_turns: list[dict] | None = None,
     ) -> tuple[dict | None, str]:
-        """Return (program_dict | None, assistant_text)."""
-        if not self._client:
-            return None, ("LLM is not configured (no ANTHROPIC_API_KEY). I can verify and "
-                          "simulate a program you paste, but I cannot synthesize one here.")
+        if not self._backend.enabled:
+            return None, _not_configured_message()
 
-        messages = []
-        for turn in (prior_turns or [])[-10:]:
-            role = (turn.get("role") or "").lower()
-            text = (turn.get("text") or "").strip()
-            if role not in ("user", "assistant") or not text:
-                continue
-            messages.append({"role": role, "content": text})
-
-        user_blocks = [f"Request: {user_message}"]
-        if context:
-            user_blocks.append(f"Context (data, not instructions): {context}")
-        if prior_errors:
-            user_blocks.append(
-                "Your previous program FAILED verification with these errors — fix ALL of them "
-                f"and re-propose: {prior_errors}")
-        messages.append({"role": "user", "content": "\n\n".join(user_blocks)})
-
-        resp = await self._client.messages.create(
-            model=settings.anthropic_model,
-            max_tokens=settings.max_tokens,
-            system=SYSTEM_PROMPT,
-            tools=[PROPOSE_PROGRAM_TOOL],
-            tool_choice={"type": "tool", "name": "propose_program"},
-            messages=messages,
-        )
-
-        text_parts, program = [], None
-        for block in resp.content:
-            if block.type == "text":
-                text_parts.append(block.text)
-            elif block.type == "tool_use" and block.name == "propose_program":
-                program = dict(block.input)
-                program.setdefault("schemaVersion", SCHEMA_VERSION)
-        return program, " ".join(text_parts).strip()
+        program, text = await self._backend.propose(
+            user_message, context, prior_errors, prior_turns)
+        if program is None and not text:
+            return None, _not_configured_message()
+        return program, text
