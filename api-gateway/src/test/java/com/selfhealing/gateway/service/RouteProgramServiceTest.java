@@ -7,6 +7,7 @@ import com.selfhealing.gateway.model.TransformationRule;
 import com.selfhealing.gateway.repository.ResponseTransformationRuleRepository;
 import com.selfhealing.gateway.repository.RouteProgramRepository;
 import com.selfhealing.gateway.repository.TransformationRuleRepository;
+import com.selfhealing.gateway.tenant.TenantContext;
 import com.selfhealing.gateway.transform.TransformProgramCompiler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -191,5 +192,28 @@ class RouteProgramServiceTest {
         assertThat(r.ruleCount).isZero();
         // empty program with zero rules is legitimate (route simply has no transforms)
         assertThat((Boolean) stored.getRequestProgram().get("empty")).isTrue();
+    }
+
+    @Test
+    void recompilePreservesExistingTenantOnUpdate() {
+        UUID tenantId = UUID.randomUUID();
+        TenantContext.setTenantId(tenantId);
+        try {
+            TransformationRule a = move("/user_obj/user_id", "/user_id");
+            activeReqRules(List.of(a));
+
+            RouteProgramService.RecompileResult first = service.recompileRoute(S, T, E, "approve");
+            assertThat(first.changed).isTrue();
+            assertThat(stored.getTenantId()).isEqualTo(tenantId);
+
+            TransformationRule b = rename("oldAmount", "amount");
+            activeReqRules(List.of(a, b));
+
+            RouteProgramService.RecompileResult second = service.recompileRoute(S, T, E, "approve-b");
+            assertThat(second.changed).isTrue();
+            assertThat(stored.getTenantId()).isEqualTo(tenantId);
+        } finally {
+            TenantContext.clear();
+        }
     }
 }

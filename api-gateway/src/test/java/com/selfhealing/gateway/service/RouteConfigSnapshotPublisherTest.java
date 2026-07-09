@@ -24,6 +24,7 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -165,6 +166,22 @@ class RouteConfigSnapshotPublisherTest {
     }
 
     @Test
+    void publishRouteSkipsStaleRepublishWhenRefreshStillDrifted() {
+        when(routeProgramService.recompileRoute(anyString(), anyString(), anyString(), anyString()))
+                .thenThrow(new IllegalStateException("rls"));
+        when(routeProgramService.ensureFreshMaterializedProgram("inventory-service", "shipping-service", "/ship"))
+                .thenReturn(false);
+        when(routeProgramService.isDrifted("inventory-service", "shipping-service", "/ship"))
+                .thenReturn(true);
+
+        boolean published = publisher.publishRouteWithoutBump("inventory-service", "shipping-service", "/ship");
+
+        assertThat(published).isFalse();
+        verify(routeConfigService, never()).get(anyString(), anyString(), anyString());
+        verify(valueOperations, never()).set(anyString(), anyString());
+    }
+
+    @Test
     void publishForServiceUsesRouteDiscovery() {
         when(routeDiscovery.discoverForService("payment-service")).thenReturn(Set.of(
                 new RouteTriple("order-service", "payment-service", "/api/payments/process")));
@@ -261,6 +278,56 @@ class RouteConfigSnapshotPublisherTest {
         assertThat(RouteConfigSnapshotPublisher.rewriteLocalHost(
                 "http://127.0.0.1:8091", "host.docker.internal"))
                 .isEqualTo("http://host.docker.internal:8091");
+    }
+
+    @Test
+    void overlaySkipsStaleMaterializedProgramWhenNoActiveRulesRemain() throws Exception {
+        java.util.Map<String, Object> staleReq = new java.util.LinkedHashMap<>();
+        staleReq.put("empty", false);
+        staleReq.put("ops", java.util.List.of(
+                java.util.Map.of("op", "move", "from", "/obj_id/item_id/new_id", "to", "/tag_sent")));
+        java.util.Map<String, Object> emptyReq = java.util.Map.of("empty", true, "ops", java.util.List.of());
+
+        com.selfhealing.gateway.model.RouteProgram stale =
+                com.selfhealing.gateway.model.RouteProgram.builder()
+                        .requestProgram(staleReq)
+                        .responseProgram(emptyReq)
+                        .programHash("stalehash")
+                        .ruleCount(1)
+                        .build();
+
+        when(routeProgramService.recompileRoute(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(new RouteProgramService.RecompileResult(true, 2, 0));
+        when(routeProgramService.hasActiveRules("inventory-service", "shipping-service", "/ship"))
+                .thenReturn(false);
+
+        RouteConfig config = RouteConfig.builder()
+                .sourceService("inventory-service")
+                .targetService("shipping-service")
+                .endpoint("/ship")
+                .targetBaseUrl("http://localhost:8002")
+                .authType(ServiceRegistration.AuthType.NONE)
+                .corsActive(false)
+                .allowedOrigins(Set.of())
+                .hasResponseContract(false)
+                .requestProgram(TransformProgram.none())
+                .responseProgram(TransformProgram.none())
+                .build();
+
+        when(routeConfigService.get("inventory-service", "shipping-service", "/ship")).thenReturn(config);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        publisher.publishRoute("inventory-service", "shipping-service", "/ship");
+
+        org.mockito.ArgumentCaptor<String> jsonCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(valueOperations).set(
+                eq(TENANT_NS + "mendr:routeconfig:inventory-service:shipping-service:/ship"),
+                jsonCaptor.capture());
+
+        JsonNode root = objectMapper.readTree(jsonCaptor.getValue());
+        assertThat(root.path("programHash").isMissingNode() || root.path("programHash").isNull()).isTrue();
+        assertThat(root.get("requestProgram").get("empty").asBoolean()).isTrue();
+        assertThat(root.get("requestProgram").get("ops")).isEmpty();
     }
 
     @Test
