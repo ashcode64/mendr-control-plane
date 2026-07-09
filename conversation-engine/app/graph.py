@@ -19,6 +19,7 @@ class GraphState(TypedDict, total=False):
     user_message: str
     context: dict
     cases: list
+    prior_turns: list
     tenant_id: Optional[str]
     candidate: Optional[dict]
     rationale: str
@@ -51,7 +52,11 @@ def build_graph(proposer: Proposer, mcp: McpClient):
 
     async def propose(state: GraphState) -> dict:
         program, text = await proposer.propose(
-            state["user_message"], state.get("context") or {}, state.get("prior_errors") or [])
+            state["user_message"],
+            state.get("context") or {},
+            state.get("prior_errors") or [],
+            state.get("prior_turns") or [],
+        )
         return {
             "candidate": program,
             "rationale": (program or {}).get("rationale", ""),

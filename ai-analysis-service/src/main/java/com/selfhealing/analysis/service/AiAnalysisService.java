@@ -35,7 +35,7 @@ import java.util.*;
 @RequiredArgsConstructor
 public class AiAnalysisService {
 
-    private final ClaudeApiClient          claudeClient;
+    private final LlmAnalysisClient          llmClient;
     private final AnalysisResultRepository analysisRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final JdbcTemplate             jdbcTemplate;
@@ -124,7 +124,7 @@ public class AiAnalysisService {
         };
 
         StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
-        AnalysisToolResult toolResult = claudeClient.analyze(systemPrompt, structured, ctx);
+        AnalysisToolResult toolResult = llmClient.analyze(systemPrompt, structured, ctx);
         AnalysisResult result = harmonizeAndSave(toolResult, ctx);
         publishResult(result, event, ctx);
         return result;
@@ -195,9 +195,11 @@ public class AiAnalysisService {
                     event.getFailureId());
         }
 
-        AnalysisResult.AnalysisSource source = toolResult.source() == AnalysisToolResult.Source.MOCK
-                ? AnalysisResult.AnalysisSource.MOCK
-                : AnalysisResult.AnalysisSource.CLAUDE;
+        AnalysisResult.AnalysisSource source = switch (toolResult.source()) {
+            case MOCK -> AnalysisResult.AnalysisSource.MOCK;
+            case GEMINI -> AnalysisResult.AnalysisSource.GEMINI;
+            case CLAUDE -> AnalysisResult.AnalysisSource.CLAUDE;
+        };
 
         AnalysisResult result = AnalysisResult.builder()
                 .failureId(event.getFailureId())

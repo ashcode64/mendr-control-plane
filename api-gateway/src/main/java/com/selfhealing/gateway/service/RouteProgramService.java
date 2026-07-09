@@ -115,7 +115,12 @@ public class RouteProgramService {
 
         long newVersion = existing.map(rp -> rp.getVersion() + 1).orElse(1L);
 
+        UUID tenantId = existing.map(RouteProgram::getTenantId)
+                .filter(java.util.Objects::nonNull)
+                .orElse(com.selfhealing.gateway.tenant.TenantContext.currentOrDefault());
+
         RouteProgram rp = RouteProgram.builder()
+                .tenantId(tenantId)
                 .sourceService(source)
                 .targetService(target)
                 .endpoint(endpoint)

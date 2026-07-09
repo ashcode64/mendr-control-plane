@@ -434,7 +434,7 @@ CREATE TABLE IF NOT EXISTS k8s_health_cache (
 CREATE INDEX idx_k8s_health_service ON k8s_health_cache(service_name, checked_at DESC);
 
 -- ─── Migration V3: AI analysis provenance + audit metadata ─────────────────
--- analysis_source distinguishes a real Claude analysis from the mock fallback.
+-- analysis_source distinguishes a real LLM analysis (CLAUDE/GEMINI) from the mock fallback.
 -- analysis_metadata holds audit-only data (allowlists, validation reason) that
 -- must stay OFF the deployed transformation_rules map / route snapshot.
 ALTER TABLE analysis_results

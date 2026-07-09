@@ -297,7 +297,12 @@ public class RouteConfigSnapshotPublisher {
                     sourceService, targetService, endpoint, e.getMessage());
         }
         if (!recompiled) {
-            routeProgramService.ensureFreshMaterializedProgram(sourceService, targetService, endpoint);
+            boolean repaired = routeProgramService.ensureFreshMaterializedProgram(sourceService, targetService, endpoint);
+            if (!repaired && routeProgramService.isDrifted(sourceService, targetService, endpoint)) {
+                log.warn("Skipping publish for {}:{}:{} - materialized program is still drifted after refresh attempt",
+                        sourceService, targetService, endpoint);
+                return false;
+            }
         }
         try {
             RouteConfig config = routeConfigService.get(sourceService, targetService, endpoint);
@@ -408,8 +413,14 @@ public class RouteConfigSnapshotPublisher {
                                             String source, String target, String endpoint) {
         boolean activeRules = routeProgramService.hasActiveRules(source, target, endpoint);
         int activeCount = activeRules ? routeProgramService.countActiveRules(source, target, endpoint) : 0;
+        // With zero active rules, the assembled snapshot's empty programs are the
+        // source of truth. Never replay a stale materialized row from a prior
+        // failed recompile into the edge snapshot.
+        if (!activeRules) {
+            return;
+        }
         routeProgramService.find(source, target, endpoint).ifPresentOrElse(rp -> {
-            if (activeRules && RouteProgramService.isMaterializedEmpty(rp)) {
+            if (RouteProgramService.isMaterializedEmpty(rp)) {
                 syncMetrics.recordOverlayDrift();
                 log.warn("Overlay drift: route {}:{}:{} has {} active rule(s) but materialized program is empty — "
                                 + "keeping assembled program",
@@ -424,14 +435,12 @@ public class RouteConfigSnapshotPublisher {
             }
             applyMaterializedOverlay(snapshot, rp, source, target, endpoint);
         }, () -> {
-            if (activeRules) {
-                syncMetrics.recordOverlayDrift();
-                log.warn("Overlay drift: route {}:{}:{} has {} active rule(s) but no materialized program row",
-                        source, target, endpoint, activeCount);
-                routeProgramService.ensureFreshMaterializedProgram(source, target, endpoint);
-                routeProgramService.find(source, target, endpoint).ifPresent(fresh ->
-                        applyMaterializedOverlay(snapshot, fresh, source, target, endpoint));
-            }
+            syncMetrics.recordOverlayDrift();
+            log.warn("Overlay drift: route {}:{}:{} has {} active rule(s) but no materialized program row",
+                    source, target, endpoint, activeCount);
+            routeProgramService.ensureFreshMaterializedProgram(source, target, endpoint);
+            routeProgramService.find(source, target, endpoint).ifPresent(fresh ->
+                    applyMaterializedOverlay(snapshot, fresh, source, target, endpoint));
         });
     }
 

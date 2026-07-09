@@ -131,6 +131,7 @@ function MendrScriptChat({ item, onStaged }) {
   const [staging, setStaging] = useState(false);
   const [staged, setStaged] = useState(false);
   const [failure, setFailure] = useState(null);
+  const [chatEnabled, setChatEnabled] = useState(item.status === 'PENDING_APPROVAL');
   const ctlRef = useRef(null);
 
   useEffect(() => () => ctlRef.current?.abort(), []);
@@ -146,30 +147,56 @@ function MendrScriptChat({ item, onStaged }) {
     return () => { alive = false; };
   }, [open, failure, item.failureId]);
 
+  useEffect(() => {
+    if (!open) return;
+    let alive = true;
+    api.getAnalysisConversation(item.id).then(conv => {
+      if (!alive || !conv) return;
+      setSessionId(conv.sessionId || null);
+      setMessages(Array.isArray(conv.messages)
+        ? conv.messages.map(m => ({ role: m.role, text: m.content }))
+        : []);
+      setResult(conv.lastResult || null);
+      setFlags(conv.lastResult?.securityFlags || []);
+      setChatEnabled(conv.chatEnabled !== false);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [open, item.id]);
+
   const context = {
     service: failure?.serviceB,
     endpoint: failure?.endpoint,
     direction: 'REQUEST',
   };
   const cases = failure?.requestPayload ? [{ input: failure.requestPayload }] : [];
+  const canChat = chatEnabled && item.status === 'PENDING_APPROVAL';
 
   const send = () => {
     const msg = input.trim();
-    if (!msg || streaming) return;
+    if (!msg || streaming || !canChat) return;
     setMessages(m => [...m, { role: 'user', text: msg }]);
     setInput('');
     setStreaming(true);
     setResult(null);
     setFlags([]);
     setStaged(false);
-    ctlRef.current = api.streamChat({ message: msg, sessionId, context, cases }, (type, data) => {
+    ctlRef.current = api.streamChat({ analysisId: item.id, message: msg, sessionId, context, cases }, (type, data) => {
       if (type === 'session') setSessionId(data.sessionId);
       else if (type === 'security') setFlags(data.flags || []);
-      else if (type === 'result') {
+      else if (type === 'persist_error') {
+        toast.error(data.message || 'Chat history was not saved');
+      } else if (type === 'result') {
         setResult(data);
-        if (data.assistantText) setMessages(m => [...m, { role: 'assistant', text: data.assistantText }]);
+        if (data.persisted === false) {
+          toast.error(data.persistError || 'Chat history was not saved for this turn');
+        }
+        const assistantText = data.assistantText || 'Verified program proposed.';
+        setMessages(m => [...m, { role: 'assistant', text: assistantText }]);
       } else if (type === 'error') {
         setMessages(m => [...m, { role: 'assistant', text: 'Error: ' + (data.message || 'stream failed') }]);
+        if (data.persisted === false) {
+          toast.error(data.persistError || 'Chat history was not saved for this turn');
+        }
       } else if (type === 'end') {
         setStreaming(false);
       }
@@ -215,6 +242,12 @@ function MendrScriptChat({ item, onStaged }) {
             Describe the transformation you want (e.g. “convert <code>/amount</code> from cents to dollars”).
             The assistant proposes a verified program — it cannot deploy; approve through the normal flow.
           </div>
+
+          {!canChat && (
+            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '10px' }}>
+              This analysis is no longer editable. Chat history is shown read-only after approval or rejection.
+            </div>
+          )}
 
           <div style={{ maxHeight: '180px', overflowY: 'auto', display: 'flex', flexDirection: 'column',
                         gap: '8px', marginBottom: '10px' }}>
@@ -298,15 +331,15 @@ function MendrScriptChat({ item, onStaged }) {
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') send(); }}
               placeholder="Describe the change…"
-              disabled={streaming}
+              disabled={streaming || !canChat}
               style={{ flex: 1, padding: '8px 12px', borderRadius: 'var(--radius-sm)',
                        border: '1px solid var(--border)', background: 'var(--bg-card)',
                        color: 'var(--text-primary)', fontSize: '13px' }}
             />
-            <button onClick={send} disabled={streaming || !input.trim()} style={{
+            <button onClick={send} disabled={streaming || !input.trim() || !canChat} style={{
               padding: '8px 16px', background: 'rgba(79,124,255,0.12)', border: '1px solid rgba(79,124,255,0.3)',
               color: 'var(--accent-blue)', borderRadius: 'var(--radius-sm)',
-              cursor: streaming ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '13px',
+              cursor: (streaming || !canChat) ? 'not-allowed' : 'pointer', fontWeight: 600, fontSize: '13px',
             }}>Send</button>
           </div>
         </div>
@@ -484,7 +517,7 @@ export default function Analysis({ onApproval }) {
       <div style={S.header}>
         <div>
           <div style={S.title}>AI Analysis</div>
-          <div style={S.sub}>Claude-powered schema mismatch analysis and transformation suggestions</div>
+          <div style={S.sub}>AI-powered schema mismatch analysis and transformation suggestions</div>
         </div>
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
           {pendingCount > 0 && (
@@ -521,7 +554,7 @@ export default function Analysis({ onApproval }) {
 
       <div style={S.card}>
         {loading ? <Spinner /> : filtered.length === 0 ? (
-          <EmptyState icon="🧠" text="No analyses yet" sub="Failures are automatically analyzed by Claude AI" />
+          <EmptyState icon="🧠" text="No analyses yet" sub="Failures are automatically analyzed by AI" />
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>

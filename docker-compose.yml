@@ -13,6 +13,7 @@ services:
       - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
       # Runs after init.sql ("init_v2_*" sorts after "init.sql"): multi-tenancy + RLS + app_user
       - ./infra/init_v2_multitenancy.sql:/docker-entrypoint-initdb.d/init_v2_multitenancy.sql
+      - ./infra/init_v3_analysis_conversations.sql:/docker-entrypoint-initdb.d/init_v3_analysis_conversations.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s
@@ -105,7 +106,11 @@ services:
       SPRING_DATASOURCE_USERNAME: ${APP_DB_USERNAME:-app_user}
       SPRING_DATASOURCE_PASSWORD: ${APP_DB_PASSWORD:-app_secret}
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
       # Auth: WorkOS JWT for the dashboard (/api/analysis), shared internal key for /mcp.
       # enforce=false keeps endpoints open while still binding tenant context.
@@ -127,8 +132,12 @@ services:
       - "8085:8085"
     environment:
       MCP_BASE_URL: http://ai-analysis-service:8082
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANALYSIS_BASE_URL: http://ai-analysis-service:8082
+      LLM_PROVIDER: ${LLM_PROVIDER:-anthropic}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
       MAX_REFINE_ITERATIONS: "3"
       # Auth + tenant propagation to the MCP surface, CORS lockdown, abuse controls.
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
