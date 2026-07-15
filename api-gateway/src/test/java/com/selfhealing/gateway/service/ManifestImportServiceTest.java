@@ -202,8 +202,8 @@ class ManifestImportServiceTest {
     }
 
     @Test
-    void rejectsUnsupportedMatchType() {
-        String bad = """
+    void acceptsTemplateMatchType() {
+        String ok = """
                 service:
                   name: order-service
                   baseUrl: http://order-service:8090
@@ -212,6 +212,27 @@ class ManifestImportServiceTest {
                     endpoint: /api/payments/{id}
                     method: GET
                     matchType: TEMPLATE
+                """;
+
+        when(routeRepository.findBySourceServiceAndTargetServiceAndEndpointAndHttpMethod(
+                anyString(), anyString(), anyString(), anyString())).thenReturn(Optional.empty());
+        when(routeRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+        var result = importService.importManifest(ok);
+        assertThat(result.isSuccess()).isTrue();
+    }
+
+    @Test
+    void rejectsUnsupportedMatchType() {
+        String bad = """
+                service:
+                  name: order-service
+                  baseUrl: http://order-service:8090
+                outbound:
+                  - targetService: payment-service
+                    endpoint: /api/payments
+                    method: GET
+                    matchType: PREFIX
                 """;
 
         assertThatThrownBy(() -> importService.importManifest(bad))

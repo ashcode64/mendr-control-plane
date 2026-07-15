@@ -107,17 +107,24 @@ public class ContextToolExecutor {
 
     private Object getContract(String service, String endpoint, String direction) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
-            SELECT example_payload, version, description FROM service_contracts
+            SELECT example_payload, inferred_schema, schema_source, spec_trust, version, description
+            FROM service_contracts
             WHERE service_name = ? AND endpoint = ? AND direction = ? AND is_active = true
             ORDER BY created_at DESC LIMIT 5
             """, service, endpoint, direction == null ? "REQUEST" : direction.toUpperCase());
         if (rows.isEmpty()) return Map.of("found", false);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("found", true);
-        out.put("examples", rows.stream().map(r -> Map.of(
-                "version", String.valueOf(r.get("version")),
-                "description", String.valueOf(r.get("description")),
-                "payload", r.get("example_payload"))).toList());
+        out.put("examples", rows.stream().map(r -> {
+            Map<String, Object> ex = new LinkedHashMap<>();
+            ex.put("version", String.valueOf(r.get("version")));
+            ex.put("description", String.valueOf(r.get("description")));
+            ex.put("payload", r.get("example_payload"));
+            ex.put("inferred_schema", r.get("inferred_schema"));
+            ex.put("schema_source", r.get("schema_source"));
+            ex.put("spec_trust", r.get("spec_trust"));
+            return ex;
+        }).toList());
         return out;
     }
 

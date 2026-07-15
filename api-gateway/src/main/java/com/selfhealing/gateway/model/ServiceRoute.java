@@ -38,7 +38,7 @@ public class ServiceRoute implements TenantScoped {
     @Column(name = "http_method")
     private String httpMethod;
 
-    /** EXACT | PREFIX | TEMPLATE — only EXACT is honored by the edge today. */
+    /** EXACT | PREFIX | TEMPLATE — EXACT and TEMPLATE are honored by the edge. */
     @Column(name = "match_type")
     private String matchType;
 

@@ -36,6 +36,10 @@ class RouteConfigSnapshotPublisherTest {
     @Mock private InterServiceRouteDiscovery routeDiscovery;
     @Mock private StringRedisTemplate stringRedisTemplate;
     @Mock private ValueOperations<String, String> valueOperations;
+    @Mock private com.selfhealing.gateway.repository.ServiceRouteRepository serviceRouteRepository;
+    @Mock private com.selfhealing.gateway.repository.ServiceContractRepository serviceContractRepository;
+    @Mock private com.selfhealing.gateway.repository.OpenApiSpecRegistryRepository openApiSpecRegistryRepository;
+    @Mock private IngressHostIdentityService ingressHostIdentityService;
 
     private RouteConfigSnapshotPublisher publisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -58,7 +62,11 @@ class RouteConfigSnapshotPublisherTest {
                 objectMapper,
                 internalProperties,
                 openRestyProperties,
-                syncMetrics);
+                syncMetrics,
+                serviceRouteRepository,
+                serviceContractRepository,
+                openApiSpecRegistryRepository,
+                ingressHostIdentityService);
     }
 
     @Test
@@ -116,7 +124,11 @@ class RouteConfigSnapshotPublisherTest {
                 objectMapper,
                 new GatewayInternalProperties(),
                 openRestyProperties,
-                syncMetrics);
+                syncMetrics,
+                serviceRouteRepository,
+                serviceContractRepository,
+                openApiSpecRegistryRepository,
+                ingressHostIdentityService);
 
         RouteConfig config = RouteConfig.builder()
                 .sourceService("order-service")

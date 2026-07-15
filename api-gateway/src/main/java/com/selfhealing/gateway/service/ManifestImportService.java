@@ -41,7 +41,7 @@ public class ManifestImportService {
     private static final Set<String> VALID_AUTH_TYPES = Set.of(
             "NONE", "JWT_BEARER", "API_KEY_HEADER", "API_KEY_QUERY", "BASIC");
     private static final Set<String> VALID_MATCH_TYPES = Set.of("EXACT", "PREFIX", "TEMPLATE");
-    private static final Set<String> SUPPORTED_MATCH_TYPES = Set.of("EXACT");
+    private static final Set<String> SUPPORTED_MATCH_TYPES = Set.of("EXACT", "TEMPLATE");
 
     private final ServiceRegistryService registryService;
     private final ServiceRouteRepository routeRepository;

@@ -2,11 +2,16 @@ package com.selfhealing.gateway.controller;
 
 import com.selfhealing.gateway.dto.manifest.ManifestImportResult;
 import com.selfhealing.gateway.dto.manifest.ManifestValidationException;
+import com.selfhealing.gateway.dto.openapi.OpenApiImportResult;
 import com.selfhealing.gateway.model.ServiceContract;
 import com.selfhealing.gateway.model.ServiceRegistration;
 import com.selfhealing.gateway.repository.ServiceContractRepository;
+import com.selfhealing.gateway.service.IngressApiKeyService;
+import com.selfhealing.gateway.service.IngressHostIdentityService;
 import com.selfhealing.gateway.service.ManifestImportService;
+import com.selfhealing.gateway.service.OpenApiImportService;
 import com.selfhealing.gateway.service.RouteChangedPublisher;
+import com.selfhealing.gateway.service.RouteConfigSnapshotPublisher;
 import com.selfhealing.gateway.service.ServiceRegistryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,6 +37,10 @@ public class ServiceRegistryController {
     private final ServiceContractRepository contractRepository;
     private final RouteChangedPublisher     routeChangedPublisher;
     private final ManifestImportService     manifestImportService;
+    private final OpenApiImportService      openApiImportService;
+    private final IngressApiKeyService      ingressApiKeyService;
+    private final IngressHostIdentityService ingressHostIdentityService;
+    private final RouteConfigSnapshotPublisher snapshotPublisher;
 
     // ── Service CRUD ──────────────────────────────────────────────────────────
 
@@ -131,6 +140,99 @@ public class ServiceRegistryController {
                     .success(false)
                     .errors(e.getErrors())
                     .build());
+        }
+    }
+
+    // ── OpenAPI import (second ingestion path) ────────────────────────────────
+
+    /**
+     * Import an OpenAPI 3.x document (raw YAML/JSON body). Registers the service,
+     * creates TEMPLATE/EXACT routes + OPENAPI_DECLARED contracts, soft-prunes
+     * removed endpoints, and republishes route snapshots.
+     */
+    @PostMapping(value = "/import-openapi", consumes = {
+            "text/yaml", "application/x-yaml", "application/yaml", "text/plain",
+            "application/json", "application/vnd.oai.openapi", "application/vnd.oai.openapi+json"})
+    public ResponseEntity<OpenApiImportResult> importOpenApiRaw(@RequestBody String body) {
+        OpenApiImportResult result = openApiImportService.importSpec(body);
+        return result.isSuccess() ? ResponseEntity.ok(result) : ResponseEntity.badRequest().body(result);
+    }
+
+    @PostMapping(value = "/import-openapi", consumes = {"multipart/form-data"})
+    public ResponseEntity<OpenApiImportResult> importOpenApiMultipart(
+            @RequestParam("file") MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            return ResponseEntity.badRequest().body(OpenApiImportResult.builder()
+                    .success(false)
+                    .errors(List.of("No OpenAPI file uploaded"))
+                    .build());
+        }
+        try {
+            String raw = new String(file.getBytes(), StandardCharsets.UTF_8);
+            OpenApiImportResult result = openApiImportService.importSpec(raw);
+            return result.isSuccess() ? ResponseEntity.ok(result) : ResponseEntity.badRequest().body(result);
+        } catch (IOException e) {
+            return ResponseEntity.badRequest().body(OpenApiImportResult.builder()
+                    .success(false)
+                    .errors(List.of("Could not read uploaded file: " + e.getMessage()))
+                    .build());
+        }
+    }
+
+    /** Fetch + import from a URL (SSRF-guarded). Body: { "url": "https://..." }. */
+    @PostMapping("/import-openapi/from-url")
+    public ResponseEntity<OpenApiImportResult> importOpenApiFromUrl(@RequestBody Map<String, String> body) {
+        String url = body == null ? null : body.get("url");
+        try {
+            OpenApiImportResult result = openApiImportService.importFromUrl(url);
+            return result.isSuccess() ? ResponseEntity.ok(result) : ResponseEntity.badRequest().body(result);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(OpenApiImportResult.builder()
+                    .success(false)
+                    .errors(List.of(e.getMessage()))
+                    .build());
+        }
+    }
+
+    /** Dry-run: returns planned diff without writing. */
+    @PostMapping(value = "/import-openapi/dry-run", consumes = {
+            "text/yaml", "application/x-yaml", "application/yaml", "text/plain", "application/json"})
+    public ResponseEntity<OpenApiImportResult> importOpenApiDryRun(@RequestBody String body) {
+        OpenApiImportResult result = openApiImportService.dryRun(body);
+        return result.isSuccess() ? ResponseEntity.ok(result) : ResponseEntity.badRequest().body(result);
+    }
+
+    /**
+     * Issue a new ingress API key ({@code <prefix>.<secret>}, same as ApiKeyService)
+     * bound to a source service. Secret hash + metadata synced to the edge as
+     * {@code mendr:apikey:{prefix}}; plaintext returned once.
+     * Body: { "sourceService": "order-service" }.
+     */
+    @PostMapping("/ingress-api-keys")
+    public ResponseEntity<Map<String, Object>> issueIngressApiKey(@RequestBody Map<String, String> body) {
+        try {
+            String source = body == null ? null : body.get("sourceService");
+            return ResponseEntity.ok(ingressApiKeyService.issue(source));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Bind a hostname to a source service for Phase 6 Host-fallback identity
+     * (when {@code X-Mendr-Key} is absent). Synced as {@code mendr:hostident:{host}}.
+     * Body: { "host": "api.acme.com", "sourceService": "order-service" }.
+     */
+    @PostMapping("/ingress-host-identity")
+    public ResponseEntity<Map<String, Object>> registerHostIdentity(@RequestBody Map<String, String> body) {
+        try {
+            String host = body == null ? null : body.get("host");
+            String source = body == null ? null : body.get("sourceService");
+            Map<String, Object> out = ingressHostIdentityService.register(host, source);
+            snapshotPublisher.bumpSyncVersionAndNotify();
+            return ResponseEntity.ok(out);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
     }
 

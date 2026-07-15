@@ -8,7 +8,12 @@ import com.selfhealing.gateway.dto.RouteConfigSnapshot;
 import com.selfhealing.gateway.dto.RouteConfigSnapshot.TransformProgramSnapshot;
 import com.selfhealing.gateway.dto.RouteConfigSyncPayload;
 import com.selfhealing.gateway.model.RouteConfig;
+import com.selfhealing.gateway.model.ServiceContract;
 import com.selfhealing.gateway.model.ServiceRegistration;
+import com.selfhealing.gateway.model.ServiceRoute;
+import com.selfhealing.gateway.repository.OpenApiSpecRegistryRepository;
+import com.selfhealing.gateway.repository.ServiceContractRepository;
+import com.selfhealing.gateway.repository.ServiceRouteRepository;
 import com.selfhealing.gateway.service.InterServiceRouteDiscovery.RouteTriple;
 import com.selfhealing.gateway.transform.TransformProgram;
 import com.selfhealing.gateway.util.DockerHostUrlRewriter;
@@ -61,9 +66,15 @@ public class RouteConfigSnapshotPublisher {
     private final GatewayInternalProperties internalProperties;
     private final GatewayOpenRestyProperties openRestyProperties;
     private final RouteSyncMetrics syncMetrics;
+    private final ServiceRouteRepository serviceRouteRepository;
+    private final ServiceContractRepository serviceContractRepository;
+    private final OpenApiSpecRegistryRepository openApiSpecRegistryRepository;
+    private final IngressHostIdentityService ingressHostIdentityService;
 
     /** Edge capability token: advertises support for snapshot v2 {@code ops[]} (MendrScript). */
     public static final String CAP_V2 = "v2";
+    /** Edge capability token: advertises transparent HTTP ingress + radixtree tables. */
+    public static final String CAP_INGRESS = "ingress";
 
     private final Object pendingSyncLock = new Object();
 
@@ -174,6 +185,7 @@ public class RouteConfigSnapshotPublisher {
                 routeProgramService.ensureFreshMaterializedProgram(
                         triple.source(), triple.target(), triple.endpoint());
                 overlayMaterializedProgram(snapshot, triple.source(), triple.target(), triple.endpoint());
+                overlayEnforceAndSurface(snapshot, triple.source(), triple.target(), triple.endpoint());
                 snapshot.setSyncValidation(isSyncValidationRoute(
                         triple.source(), triple.target(), triple.endpoint()));
                 applyDockerHostRewrite(snapshot);
@@ -221,7 +233,46 @@ public class RouteConfigSnapshotPublisher {
                 .version(currentConfigVersion())
                 .routes(routes)
                 .removed(removed)
+                .ingressTables(caps != null && caps.contains(CAP_INGRESS)
+                        ? buildIngressTables() : null)
+                .apiKeys(caps != null && caps.contains(CAP_INGRESS)
+                        ? collectApiKeys() : null)
+                .hostIdentity(caps != null && caps.contains(CAP_INGRESS)
+                        ? collectHostIdentity() : null)
                 .build();
+    }
+
+    /**
+     * Current-tenant ingress API keys only ({@code t:{tenant}:mendr:apikey:*}),
+     * emitted as bare {@code mendr:apikey:{prefix}} for the edge.
+     */
+    private Map<String, String> collectApiKeys() {
+        Map<String, String> out = new LinkedHashMap<>();
+        try {
+            String pattern = TenantKeys.prefix() + IngressApiKeyService.REDIS_PREFIX + "*";
+            Set<String> keys = stringRedisTemplate.keys(pattern);
+            if (keys == null) {
+                return out;
+            }
+            for (String key : keys) {
+                String val = stringRedisTemplate.opsForValue().get(key);
+                if (val == null) {
+                    continue;
+                }
+                int idx = key.indexOf(IngressApiKeyService.REDIS_PREFIX);
+                if (idx < 0) {
+                    continue;
+                }
+                out.put(key.substring(idx), val);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to collect ingress API keys for sync: {}", e.getMessage());
+        }
+        return out;
+    }
+
+    private Map<String, String> collectHostIdentity() {
+        return ingressHostIdentityService.collectAll();
     }
 
     public void registerPendingSync(long since, DeferredResult<ResponseEntity<RouteConfigSyncPayload>> deferred) {
@@ -308,6 +359,7 @@ public class RouteConfigSnapshotPublisher {
             RouteConfig config = routeConfigService.get(sourceService, targetService, endpoint);
             RouteConfigSnapshot snapshot = toSnapshot(config);
             overlayMaterializedProgram(snapshot, sourceService, targetService, endpoint);
+            overlayEnforceAndSurface(snapshot, sourceService, targetService, endpoint);
             snapshot.setSyncValidation(isSyncValidationRoute(sourceService, targetService, endpoint));
             applyDockerHostRewrite(snapshot);
 
@@ -409,6 +461,76 @@ public class RouteConfigSnapshotPublisher {
      * transform programs come from the materialized {@code route_program} row so a
      * transient per-publish compile can never blank a route that has approved rules.
      */
+    /**
+     * Overlay x-mendr-enforce mode + AOT allowed surface from the caller REQUEST contract.
+     */
+    private void overlayEnforceAndSurface(RouteConfigSnapshot snapshot,
+                                          String source, String target, String endpoint) {
+        try {
+            List<ServiceContract> contracts = serviceContractRepository
+                    .findByServiceNameAndEndpointAndDirectionAndIsActiveTrue(source, endpoint, "REQUEST");
+            if (contracts.isEmpty()) {
+                // Fall back to provider-side contract
+                contracts = serviceContractRepository
+                        .findByServiceNameAndEndpointAndDirectionAndIsActiveTrue(target, endpoint, "REQUEST");
+            }
+            if (contracts.isEmpty()) return;
+            ServiceContract c = contracts.get(0);
+            if (c.getEnforceMode() != null) {
+                snapshot.setEnforceMode(c.getEnforceMode());
+            }
+            if (c.getAllowedSurface() != null) {
+                snapshot.setAllowedSurface(c.getAllowedSurface());
+            }
+        } catch (Exception e) {
+            log.debug("overlayEnforceAndSurface {}:{}:{} — {}", source, target, endpoint, e.getMessage());
+        }
+    }
+
+    /**
+     * Build per-host ingress routing tables from active service_routes + OpenAPI registry host.
+     */
+    private Map<String, List<Map<String, Object>>> buildIngressTables() {
+        Map<String, List<Map<String, Object>>> tables = new LinkedHashMap<>();
+        // Default host from most recent OpenAPI registry row, else "*"
+        String defaultHost = openApiSpecRegistryRepository
+                .findAll().stream()
+                .filter(r -> r.isActive() && r.getIngressHost() != null && !r.getIngressHost().isBlank())
+                .map(r -> r.getIngressHost())
+                .findFirst()
+                .orElse("*");
+
+        for (ServiceRoute route : serviceRouteRepository.findByIsActiveTrue()) {
+            String host = defaultHost;
+            // Prefer per-source-app host when registered
+            var reg = openApiSpecRegistryRepository
+                    .findFirstBySourceAppAndIsActiveTrueOrderByImportedAtDesc(route.getSourceService());
+            if (reg.isPresent() && reg.get().getIngressHost() != null
+                    && !reg.get().getIngressHost().isBlank()) {
+                host = reg.get().getIngressHost();
+            }
+
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("path", route.getEndpoint());
+            entry.put("method", route.getHttpMethod() == null ? "GET" : route.getHttpMethod());
+            entry.put("targetService", route.getTargetService());
+            entry.put("endpointTemplate", route.getEndpoint());
+            entry.put("priority", "TEMPLATE".equalsIgnoreCase(route.getMatchType()) ? 0 : 10);
+            // Enforce from source REQUEST contract when present
+            String enforce = "observe";
+            List<ServiceContract> contracts = serviceContractRepository
+                    .findByServiceNameAndEndpointAndDirectionAndIsActiveTrue(
+                            route.getSourceService(), route.getEndpoint(), "REQUEST");
+            if (!contracts.isEmpty() && contracts.get(0).getEnforceMode() != null) {
+                enforce = contracts.get(0).getEnforceMode();
+            }
+            entry.put("enforce", enforce);
+
+            tables.computeIfAbsent(host, h -> new ArrayList<>()).add(entry);
+        }
+        return tables;
+    }
+
     private void overlayMaterializedProgram(RouteConfigSnapshot snapshot,
                                             String source, String target, String endpoint) {
         boolean activeRules = routeProgramService.hasActiveRules(source, target, endpoint);

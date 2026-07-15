@@ -46,6 +46,18 @@ public class RouteConfigSnapshot {
     /** Approved upstream Origin header overrides for this route */
     private List<OriginOverrideSnapshot> originOverrides;
 
+    /**
+     * {@code observe} (default) or {@code strict}. When {@code strict}, the edge
+     * rejects undeclared body fields / query params using {@link #allowedSurface}.
+     */
+    private String enforceMode;
+
+    /**
+     * AOT-compiled allowed surface for strict enforcement:
+     * bodyPointers, queryParams, additionalProperties, schemaSource, specTrust.
+     */
+    private Map<String, Object> allowedSurface;
+
     @Data
     @Builder
     @NoArgsConstructor

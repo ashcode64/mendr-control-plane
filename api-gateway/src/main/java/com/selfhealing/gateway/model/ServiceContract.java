@@ -48,6 +48,35 @@ public class ServiceContract implements TenantScoped {
     @Column(name = "inferred_schema", columnDefinition = "jsonb")
     private Map<String, Object> inferredSchema;
 
+    /**
+     * Provenance of {@link #inferredSchema}:
+     * {@code OPENAPI_DECLARED}, {@code EXAMPLE_INFERRED}, or {@code TRAFFIC_LEARNED}.
+     */
+    @Column(name = "schema_source")
+    @Builder.Default
+    private String schemaSource = "EXAMPLE_INFERRED";
+
+    /**
+     * 0..1 trust weight for the declared schema. Decayed when declared-vs-observed
+     * disagreement is classified as ordinary drift ({@code MISSING_DECLARED}).
+     */
+    @Column(name = "spec_trust")
+    @Builder.Default
+    private Double specTrust = 0.5;
+
+    /**
+     * AOT-compiled allowed surface for edge {@code x-mendr-enforce: strict}:
+     * bodyPointers, queryParams, additionalProperties, schemaSource, specTrust.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "allowed_surface", columnDefinition = "jsonb")
+    private Map<String, Object> allowedSurface;
+
+    /** {@code observe} (default) or {@code strict} — maps from {@code x-mendr-enforce}. */
+    @Column(name = "enforce_mode")
+    @Builder.Default
+    private String enforceMode = "observe";
+
     private String description;
     private String version;
 
