@@ -91,7 +91,8 @@ class ContextToolExecutorPrecedentsTest {
                 jdbcTemplate, new ObjectMapper(), enricher, mendrScriptGatewayClient, precedentsEmbedClient,
                 new com.selfhealing.analysis.service.ddmin.DdminOracleService(
                         mendrScriptGatewayClient, jdbcTemplate,
-                        new com.selfhealing.analysis.service.ddmin.DdminLocalizer()),
+                        new com.selfhealing.analysis.service.ddmin.DdminLocalizer(),
+                        org.mockito.Mockito.mock(com.selfhealing.analysis.observability.MendrErrorSemantics.class)),
                 org.mockito.Mockito.mock(com.selfhealing.analysis.service.bandit.BanditService.class));
         ReflectionTestUtils.setField(executor, "lagWindowMinutes", 15);
         ReflectionTestUtils.setField(executor, "vectorTopK", 8);

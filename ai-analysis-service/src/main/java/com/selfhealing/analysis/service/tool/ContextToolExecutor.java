@@ -125,8 +125,10 @@ public class ContextToolExecutor {
                                     "items", Map.of("type", "object"))),
                     List.of("program")),
             toolDef("localize_fields",
-                    "Delta-debug (ddmin) multi-field drift with bifurcated oracle: schema→offline simulate; "
-                            + "idempotent GET/PUT/DELETE/HEAD→live allowed; non-idempotent POST/PATCH→ABORT to HITL. "
+                    "Delta-debug (ddmin) multi-field drift with bifurcated oracle: "
+                            + "SCHEMA_MISMATCH→offline simulate; RFC 9110 safe methods "
+                            + "(GET/HEAD/OPTIONS[/TRACE])→live with X-Mendr-Diagnostic-Probe; "
+                            + "mutating POST/PUT/PATCH/DELETE→ABORT to HITL (config cannot enable). "
                             + "Returns minimal field set + path. Unresolved (oneOf/anyOf) is never coerced.",
                     Map.of(
                             "category", Map.of("type", "string", "description", "SCHEMA_MISMATCH / RESPONSE_MISMATCH / …"),

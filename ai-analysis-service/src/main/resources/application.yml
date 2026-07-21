@@ -40,13 +40,21 @@ mendr:
     risk-budget: ${MENDR_CONFORMAL_RISK_BUDGET:0.01}
     auto-apply-enabled: ${MENDR_CONFORMAL_AUTO_APPLY:false}
     score-model: ${MENDR_CONFORMAL_SCORE_MODEL:logistic}
+    allow-opaque-model: ${MENDR_CONFORMAL_ALLOW_OPAQUE:false}
+    min-train-n: ${MENDR_CONFORMAL_MIN_TRAIN_N:500}
+    cross-tenant-train: ${MENDR_CONFORMAL_CROSS_TENANT_TRAIN:false}
     retrain-ms: ${MENDR_CONFORMAL_RETRAIN_MS:3600000}
   metamorphic:
     fuzz-count: ${MENDR_METAMORPHIC_FUZZ_COUNT:256}
   ddmin:
     max-fields: ${MENDR_DDMIN_MAX_FIELDS:32}
+    live-safe-methods: ${MENDR_DDMIN_LIVE_METHODS:GET,HEAD,OPTIONS}
+    # Deprecated alias (same env); prefer live-safe-methods. PUT/DELETE hard-denied in code.
     live-idempotent-methods: ${MENDR_DDMIN_LIVE_METHODS:GET,HEAD,OPTIONS}
-    abort-non-idempotent: ${MENDR_DDMIN_ABORT_NON_IDEMPOTENT:true}
+    abort-non-safe: ${MENDR_DDMIN_ABORT_NON_SAFE:true}
+    live-max-probes-per-incident: ${MENDR_DDMIN_LIVE_MAX_PROBES:32}
+    live-min-interval-ms: ${MENDR_DDMIN_LIVE_MIN_INTERVAL_MS:50}
+    live-timeout-ms: ${MENDR_DDMIN_LIVE_TIMEOUT_MS:3000}
   bandit:
     enabled: ${MENDR_BANDIT_ENABLED:true}
     only-ambiguous: ${MENDR_BANDIT_ONLY_AMBIGUOUS:true}
@@ -70,7 +78,8 @@ mendr:
     runtime: ${MENDR_LLM_RUNTIME:anthropic}
   precedents:
     lag-window-minutes: ${MENDR_PRECEDENTS_LAG_WINDOW_MINUTES:15}
-    quiet-window-minutes: ${MENDR_PRECEDENTS_QUIET_WINDOW_MINUTES:60}
+    # Deprecated unused — Wilson uses quality.min-age-minutes. Kept so old env vars do not break.
+    quiet-window-minutes: ${MENDR_PRECEDENTS_QUIET_WINDOW_MINUTES:${MENDR_QUALITY_MIN_AGE_MINUTES:1}}
     vector-top-k: ${MENDR_PRECEDENTS_VECTOR_TOP_K:8}
     quality-sweep-ms: ${MENDR_PRECEDENTS_QUALITY_SWEEP_MS:300000}
     anonymize-ms: ${MENDR_PRECEDENTS_ANONYMIZE_MS:600000}

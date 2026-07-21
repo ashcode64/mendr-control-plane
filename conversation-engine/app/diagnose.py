@@ -254,7 +254,7 @@ async def run_diagnose(
         return {
             "status": "unverifiable",
             "program": None,
-            "rationale": (ddmin_meta or {}).get("abortReason") or "ddmin aborted for non-idempotent upstream",
+            "rationale": (ddmin_meta or {}).get("abortReason") or "ddmin aborted for unsafe/mutating upstream",
             "assistantText": None,
             "verification": None,
             "simulation": None,
