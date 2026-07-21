@@ -29,6 +29,7 @@ from sse_starlette.sse import EventSourceResponse
 from .auth import Principal, authenticate
 from .analysis_client import AnalysisClient
 from .config import settings
+from .diagnose import run_diagnose
 from .graph import build_graph
 from .llm import Proposer
 from .mcp_client import McpClient
@@ -86,9 +87,92 @@ class ChatRequest(BaseModel):
     cases: list | None = None
 
 
+class DiagnoseRequest(BaseModel):
+    errorSignature: dict
+    cases: list | None = None
+    complexity: dict | None = None
+    priorTurns: list | None = None
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "llm": _proposer.enabled, "mcp": settings.mcp_base_url}
+
+
+class EmbedRequest(BaseModel):
+    text: str | None = None
+    errorSignature: dict | None = None
+    preferGemini: bool = True
+
+
+@app.post("/internal/embed")
+async def internal_embed(
+    req: EmbedRequest,
+    principal: Principal = Depends(authenticate),
+):
+    """Machine embedding endpoint for ErrorSignatures (hash or Gemini)."""
+    from .embeddings import (
+        canonical_signature_text,
+        embed_signature,
+        hash_embed,
+        to_vector_literal,
+    )
+
+    if req.errorSignature:
+        vec = embed_signature(req.errorSignature, prefer_gemini=req.preferGemini)
+        text = canonical_signature_text(req.errorSignature)
+    elif req.text is not None:
+        if req.preferGemini and settings.gemini_api_key:
+            try:
+                from .embeddings import gemini_embed
+                vec = gemini_embed(req.text)
+            except Exception:
+                vec = hash_embed(req.text)
+        else:
+            vec = hash_embed(req.text)
+        text = req.text
+    else:
+        raise HTTPException(status_code=400, detail="text or errorSignature required")
+
+    return {
+        "dim": len(vec),
+        "embedding": vec,
+        "vectorLiteral": to_vector_literal(vec),
+        "signatureText": text,
+        "backend": "gemini" if (req.preferGemini and settings.gemini_api_key) else "hash",
+        "tenantId": principal.tenant_id,
+    }
+
+
+@app.post("/diagnose")
+async def diagnose(
+    req: DiagnoseRequest,
+    principal: Principal = Depends(authenticate),
+):
+    """Internal (machine) diagnosis: ErrorSignature → verified MendrScript program.
+
+    Called by ai-analysis-service AiAnalysisService when
+    ``mendr.conversation.diagnose-url`` is configured. No SSE — returns a single JSON body.
+    """
+    if not req.errorSignature:
+        raise HTTPException(status_code=400, detail="errorSignature is required")
+    try:
+        result = await run_diagnose(
+            error_signature=req.errorSignature,
+            cases=req.cases,
+            complexity=req.complexity,
+            tenant_id=principal.tenant_id,
+            prior_turns=req.priorTurns,
+        )
+        audit.info(
+            "diagnose.result tenant=%s principal=%s status=%s category=%s",
+            principal.tenant_id, principal.kind, result.get("status"),
+            (req.errorSignature or {}).get("category"),
+        )
+        return result
+    except Exception as e:
+        logger.warning("diagnose failed tenant=%s: %s", principal.tenant_id, e)
+        raise HTTPException(status_code=502, detail=f"diagnose failed: {e}") from e
 
 
 @app.post("/chat/stream")

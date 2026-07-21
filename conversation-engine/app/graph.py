@@ -1,4 +1,5 @@
-"""LangGraph synthesis loop: load_context -> propose -> verify -> (simulate | refine) -> present.
+"""LangGraph synthesis loop: load_context -> propose -> verify -> (simulate | refine)
+-> metamorphic -> present.
 
 The graph is the orchestration spine. It has NO deploy node by construction — the
 terminal `present` node hands the verified program + simulation back to the operator,
@@ -26,10 +27,13 @@ class GraphState(TypedDict, total=False):
     assistant_text: str
     verification: Optional[dict]
     simulation: Optional[dict]
+    metamorphic: Optional[dict]
     iterations: int
     prior_errors: list
     status: str
     notes: list
+    bandit: Optional[dict]
+    ddmin: Optional[dict]
 
 
 def build_graph(proposer: Proposer, mcp: McpClient):
@@ -70,12 +74,43 @@ def build_graph(proposer: Proposer, mcp: McpClient):
         # LangGraph only persists state from node returns, so stashing prior_errors in
         # the conditional edge would be lost and the refine loop would re-propose blind.
         errors = [] if v.get("valid") else (v.get("errors") or ["verification failed"])
+        # Synthesis-only: reject ops outside structural sketch allowlist when present
+        sketch = (state.get("context") or {}).get("sketch") or {}
+        allowed = sketch.get("allowedOpcodes") or []
+        if allowed and state.get("candidate") and v.get("valid"):
+            ops = (state.get("candidate") or {}).get("ops") or []
+            out_of_sketch = []
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                opcode = str(op.get("op") or op.get("opcode") or "").lower()
+                if opcode and opcode not in {a.lower() for a in allowed}:
+                    out_of_sketch.append(opcode)
+            if out_of_sketch:
+                errors = list(errors) + [f"out-of-sketch opcode(s): {out_of_sketch}"]
+                v = dict(v)
+                v["valid"] = False
+                v["errors"] = errors
         return {"verification": v, "prior_errors": errors}
 
     async def simulate(state: GraphState) -> dict:
         report = await mcp.for_tenant(state.get("tenant_id")).simulate_transform(
             state["candidate"], state.get("cases") or [])
-        return {"simulation": report, "status": "ready"}
+        return {"simulation": report}
+
+    async def metamorphic(state: GraphState) -> dict:
+        """Phase 8.2 — offline property checks after verify/simulate; feeds SafetyScore."""
+        inputs = []
+        for c in state.get("cases") or []:
+            if isinstance(c, dict) and c.get("input") is not None:
+                inputs.append(c["input"])
+        report = await mcp.for_tenant(state.get("tenant_id")).verify_properties(
+            state["candidate"], inputs)
+        status = "ready"
+        if report and report.get("allPassed") is False:
+            # Soft: still present, but passRate travels to Safety Gate via diagnose response
+            pass
+        return {"metamorphic": report, "status": status}
 
     async def present(state: GraphState) -> dict:
         if not state.get("candidate"):
@@ -100,6 +135,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     g.add_node("propose", propose)
     g.add_node("verify", verify)
     g.add_node("simulate", simulate)
+    g.add_node("metamorphic", metamorphic)
     g.add_node("present", present)
 
     g.set_entry_point("load_context")
@@ -107,6 +143,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     g.add_conditional_edges("propose", after_propose, {"verify": "verify", "present": "present"})
     g.add_conditional_edges("verify", after_verify,
                             {"simulate": "simulate", "propose": "propose", "present": "present"})
-    g.add_edge("simulate", "present")
+    g.add_edge("simulate", "metamorphic")
+    g.add_edge("metamorphic", "present")
     g.add_edge("present", END)
     return g.compile()

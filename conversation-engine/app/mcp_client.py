@@ -72,7 +72,22 @@ class McpClient:
     async def simulate_transform(self, program: dict, cases: list[dict]) -> dict:
         return await self.call_tool("simulate_transform", {"program": program, "cases": cases})
 
+    async def verify_properties(self, program: dict, inputs: list | None = None) -> dict:
+        return await self.call_tool(
+            "verify_properties",
+            {"program": program, "inputs": inputs or []},
+        )
+
+    async def localize_fields(self, **kwargs) -> dict:
+        return await self.call_tool("localize_fields", {k: v for k, v in kwargs.items() if v is not None})
+
     async def get_contract(self, service: str, endpoint: str, direction: str = "REQUEST") -> dict:
         return await self.call_tool(
             "get_contract", {"service": service, "endpoint": endpoint, "direction": direction}
         )
+
+    async def get_error_signature(self, failure_id: str) -> dict:
+        return await self.call_tool("get_error_signature", {"failureId": failure_id})
+
+    async def get_precedents(self, **kwargs) -> dict:
+        return await self.call_tool("get_precedents", {k: v for k, v in kwargs.items() if v is not None})

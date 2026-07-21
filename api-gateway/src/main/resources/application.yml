@@ -47,6 +47,8 @@ mendr:
     default-tenant-id: 00000000-0000-0000-0000-000000000001
     # Set false for strict isolation once every entry point sets a real tenant.
     fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}
+  metamorphic:
+    fuzz-count: ${MENDR_METAMORPHIC_FUZZ_COUNT:256}
   auth:
     # When true every request must present a WorkOS JWT or per-tenant API key.
     enforce: ${MENDR_AUTH_ENFORCE:false}

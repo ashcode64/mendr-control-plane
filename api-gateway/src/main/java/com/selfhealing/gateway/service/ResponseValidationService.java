@@ -66,7 +66,11 @@ public class ResponseValidationService {
                 : new HashMap<>();
 
         ApiFailure failure = failureIngestionService.recordResponseMismatch(
-                proxy, rawBody, transformed, mismatch.get());
+                proxy, rawBody, transformed, mismatch.get(),
+                request.getProblemDetail(),
+                request.getCorrelationId(),
+                request.getRequestId(),
+                request.getResponseHeaders());
 
         int ttl = internalProperties.getValidateDedupTtlSeconds();
         if (ttl > 0) {

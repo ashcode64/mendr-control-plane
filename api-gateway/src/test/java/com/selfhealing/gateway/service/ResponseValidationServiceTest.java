@@ -67,7 +67,8 @@ class ResponseValidationServiceTest {
                         Map.of())));
 
         UUID failureId = UUID.randomUUID();
-        when(failureIngestionService.recordResponseMismatch(any(), any(), any(), any()))
+        when(failureIngestionService.recordResponseMismatch(
+                any(), any(), any(), any(), any(), any(), any(), any()))
                 .thenReturn(ApiFailure.builder().id(failureId).build());
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
@@ -98,5 +99,67 @@ class ResponseValidationServiceTest {
         assertThat(outcome.status()).isEqualTo("deduplicated");
         verify(responseValidator, never()).validate(any(), any(), any(), any());
         verify(failureIngestionService, never()).recordResponseMismatch(any(), any(), any(), any());
+    }
+
+    @Test
+    void mismatchPassThroughProblemDetailAndCorrelationTelemetry() {
+        Map<String, Object> problemDetail = Map.of(
+                "type", "https://example.com/problems/response",
+                "title", "Mismatch",
+                "status", 502,
+                "detail", "missing amount",
+                "json_path", "/amount"
+        );
+        Map<String, Object> responseHeaders = Map.of("Content-Type", "application/problem+json");
+
+        ValidateResponseRequest request = ValidateResponseRequest.builder()
+                .sourceService("order-service")
+                .targetService("payment-service")
+                .endpoint("/api/payments/process")
+                .httpMethod("POST")
+                .transformedResponse(Map.of("status", "bad"))
+                .rawResponse(Map.of("status", "ok"))
+                .problemDetail(problemDetail)
+                .correlationId("corr-42")
+                .requestId("req-42")
+                .responseHeaders(responseHeaders)
+                .build();
+
+        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(responseValidator.validate("order-service", "payment-service", "/api/payments/process",
+                request.getTransformedResponse()))
+                .thenReturn(Optional.of(new ResponseMismatch(
+                        ResponseMismatch.Kind.MISSING_FIELD,
+                        "missing amount",
+                        Set.of("amount"),
+                        Map.of(),
+                        Map.of(),
+                        Map.of())));
+
+        UUID failureId = UUID.randomUUID();
+        when(failureIngestionService.recordResponseMismatch(
+                any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(ApiFailure.builder().id(failureId).build());
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        var outcome = responseValidationService.validate(request);
+
+        assertThat(outcome.status()).isEqualTo("mismatch");
+        assertThat(outcome.failureId()).isEqualTo(failureId);
+
+        org.mockito.ArgumentCaptor<Map> pdCaptor = org.mockito.ArgumentCaptor.forClass(Map.class);
+        org.mockito.ArgumentCaptor<String> corrCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<String> reqCaptor = org.mockito.ArgumentCaptor.forClass(String.class);
+        org.mockito.ArgumentCaptor<Map> hdrCaptor = org.mockito.ArgumentCaptor.forClass(Map.class);
+
+        verify(failureIngestionService).recordResponseMismatch(
+                any(), any(), any(), any(),
+                pdCaptor.capture(), corrCaptor.capture(), reqCaptor.capture(), hdrCaptor.capture());
+
+        assertThat(pdCaptor.getValue()).containsEntry("detail", "missing amount");
+        assertThat(pdCaptor.getValue()).containsEntry("json_path", "/amount");
+        assertThat(corrCaptor.getValue()).isEqualTo("corr-42");
+        assertThat(reqCaptor.getValue()).isEqualTo("req-42");
+        assertThat(hdrCaptor.getValue()).containsEntry("Content-Type", "application/problem+json");
     }
 }

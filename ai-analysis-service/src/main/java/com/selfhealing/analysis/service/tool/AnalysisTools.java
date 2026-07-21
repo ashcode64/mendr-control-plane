@@ -59,9 +59,15 @@ public final class AnalysisTools {
     public static final Map<String, Object> PROPOSE_TYPE_COERCE = tool(
             "propose_type_coerce",
             "Fix a request schema mismatch by coercing field types. Use when field count matches "
-                    + "but types differ. Coercion values must be one of: double, integer, long, string, boolean, decimal.",
+                    + "but types differ. Coercion values must be one of: double, integer, long, string, boolean, decimal. "
+                    + "Fill only the drifted field(s) from the ErrorSignature sketch hole — do not invent extra fields.",
             props(
-                    p("coercions", obj("field name -> target type")),
+                    p("coercions", Map.of(
+                            "type", "object",
+                            "description", "field name -> target type",
+                            "additionalProperties", Map.of(
+                                    "type", "string",
+                                    "enum", List.of("double", "integer", "long", "string", "boolean", "decimal")))),
                     p("confidence", num()),
                     p("rootCause", strType()),
                     p("suggestedPermanentFix", strType())),

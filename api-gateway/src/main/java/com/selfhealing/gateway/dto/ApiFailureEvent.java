@@ -37,4 +37,11 @@ public class ApiFailureEvent {
     private String corsBlockedAt;
     /** Origin Mendr sent to Service B on the wire. */
     private String upstreamOriginSent;
+    /** Client correlation / request id from the edge (Phase 7). */
+    private String correlationId;
+    private String requestId;
+    /** RFC 9457 Problem Details (dual-accept with errorMessage). */
+    private Map<String, Object> problemDetail;
+    /** Selected upstream response headers from the edge. */
+    private Map<String, Object> responseHeaders;
 }

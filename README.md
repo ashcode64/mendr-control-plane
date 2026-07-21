@@ -61,8 +61,27 @@ was added, apply it manually (idempotent):
 docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v3_analysis_conversations.sql
 ```
 
-Fresh `docker compose up` on a new volume applies `init.sql` → `init_v2_*` → `init_v3_*`
-automatically.
+### ErrorSignature / GraphRAG migration (Phases 4–6)
+
+Compose now uses **`pgvector/pgvector:pg15`** (not stock `postgres:15-alpine`) and
+mounts `infra/init_error_signature.sql` + `infra/init_v5_error_precedents.sql`
+(`CREATE EXTENSION vector`, `error_precedents`, tenant RLS).
+
+**Existing volumes do not re-run init scripts.** Either recreate the volume, or
+apply manually:
+
+```powershell
+# Requires a pgvector-capable image already running
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_error_signature.sql
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v4_openapi.sql
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v5_error_precedents.sql
+```
+
+If the volume was created on non-pgvector Postgres, recreate it (e.g.
+`docker compose down -v` then `up`) so the vector extension can install.
+
+Fresh `docker compose up` on a new volume applies `init.sql` → `init_v2_*` →
+`init_v3_*` → `init_v4_*` → `init_v5_*` automatically.
 
 ## Multi-tenancy, isolation & auth
 

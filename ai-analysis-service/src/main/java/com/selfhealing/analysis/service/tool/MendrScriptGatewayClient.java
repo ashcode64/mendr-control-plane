@@ -39,6 +39,10 @@ public class MendrScriptGatewayClient {
         return post("/api/internal/mendrscript/simulate", simulateRequest);
     }
 
+    public Map<String, Object> verifyProperties(Object verifyPropertiesRequest) {
+        return post("/api/internal/mendrscript/verify-properties", verifyPropertiesRequest);
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> post(String path, Object body) {
         try {

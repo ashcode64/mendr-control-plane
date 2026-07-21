@@ -3,6 +3,7 @@ package com.selfhealing.analysis.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.model.AnalysisResult;
 import com.selfhealing.analysis.repository.AnalysisResultRepository;
+import com.selfhealing.analysis.service.ApprovalDeployPublisher;
 import com.selfhealing.analysis.service.tool.MendrScriptGatewayClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -30,6 +31,7 @@ public class AnalysisController {
     private final MendrScriptGatewayClient mendrScriptGatewayClient;
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final ApprovalDeployPublisher approvalDeployPublisher;
 
     @GetMapping
     public ResponseEntity<Page<AnalysisResult>> getAll(
@@ -152,18 +154,19 @@ public class AnalysisController {
             @RequestBody(required = false) Map<String, String> body) {
 
         return analysisRepository.findById(id).map(result -> {
+            // Idempotent: already APPROVED (e.g. SafetyGate auto-apply) — do not re-publish Kafka.
+            if (result.getStatus() == AnalysisResult.AnalysisStatus.APPROVED) {
+                Map<String, Object> response = new HashMap<>();
+                response.put("message", "Already approved — deploy was not re-triggered");
+                response.put("analysisId", id);
+                response.put("alreadyApproved", true);
+                return ResponseEntity.ok(response);
+            }
+
             result.setStatus(AnalysisResult.AnalysisStatus.APPROVED);
             analysisRepository.save(result);
-
-            // Publish approval event to trigger rule deployment
-            Map<String, Object> approvalEvent = new HashMap<>();
-            approvalEvent.put("analysisId", id);
-            approvalEvent.put("action", "APPROVED");
-            approvalEvent.put("actedBy", body != null ? body.getOrDefault("approvedBy", "dashboard-user") : "dashboard-user");
-            approvalEvent.put("transformationRules", result.getTransformationRules());
-            approvalEvent.put("failureId", result.getFailureId());
-
-            kafkaTemplate.send("api.transformations.approved", id.toString(), approvalEvent);
+            String actedBy = body != null ? body.getOrDefault("approvedBy", "dashboard-user") : "dashboard-user";
+            approvalDeployPublisher.publishApproved(result, actedBy);
 
             Map<String, Object> response = new HashMap<>();
             response.put("message", "Transformation rule approved and deployment triggered");

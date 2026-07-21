@@ -290,24 +290,9 @@ function MendrScriptChat({ item, onStaged }) {
                 </pre>
               )}
 
-              {Array.isArray(sim?.results) && sim.results.length > 0 && (
-                <div style={{ marginTop: '8px' }}>
-                  <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase',
-                                letterSpacing: '0.06em', marginBottom: '6px' }}>Before → After (simulation)</div>
-                  {sim.results.map((r, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '8px', fontFamily: 'var(--font-mono)',
-                                          fontSize: '11px', marginBottom: '4px' }}>
-                      <span style={{ color: 'var(--text-muted)', flex: 1, wordBreak: 'break-all' }}>
-                        {JSON.stringify(r.input)}
-                      </span>
-                      <span style={{ color: 'var(--text-muted)' }}>→</span>
-                      <span style={{ color: r.ok ? '#10e88a' : '#ff4757', flex: 1, wordBreak: 'break-all' }}>
-                        {r.ok ? JSON.stringify(r.output) : `fail-closed: ${r.error}`}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div style={{ marginTop: '8px' }}>
+                <SimulationPanel simulation={sim} title="Before → After (simulation)" />
+              </div>
 
               {v?.valid && (
                 <button onClick={stage} disabled={staging || staged} style={{
@@ -348,10 +333,106 @@ function MendrScriptChat({ item, onStaged }) {
   );
 }
 
+function analysisMeta(item) {
+  return item?.analysisMetadata && typeof item.analysisMetadata === 'object'
+    ? item.analysisMetadata
+    : {};
+}
+
+function SimulationPanel({ simulation, title }) {
+  const results = simulation?.results;
+  if (!Array.isArray(results) || results.length === 0) return null;
+  return (
+    <div style={{ marginBottom: '16px' }}>
+      <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase',
+                    letterSpacing: '0.06em', marginBottom: '8px' }}>
+        {title || 'Before → After (simulation)'}
+      </div>
+      {results.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: '8px', fontFamily: 'var(--font-mono)',
+                              fontSize: '11px', marginBottom: '4px' }}>
+          <span style={{ color: 'var(--text-muted)', flex: 1, wordBreak: 'break-all' }}>
+            {JSON.stringify(r.input)}
+          </span>
+          <span style={{ color: 'var(--text-muted)' }}>→</span>
+          <span style={{ color: r.ok ? '#10e88a' : '#ff4757', flex: 1, wordBreak: 'break-all' }}>
+            {r.ok ? JSON.stringify(r.output) : `fail-closed: ${r.error}`}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HitlBanners({ item }) {
+  const meta = analysisMeta(item);
+  const trust = typeof meta.spec_trust === 'number'
+    ? meta.spec_trust
+    : (meta.errorSignature && typeof meta.errorSignature.spec_trust === 'number'
+      ? meta.errorSignature.spec_trust
+      : null);
+  const ownerRequired = meta.owner_action_required === true || meta.refuseAutoHeal === true;
+  const conformal = meta.conformal && typeof meta.conformal === 'object' ? meta.conformal : {};
+  const abstain = conformal.abstain === true || meta['conformal.abstain'] === true;
+  const autoEligible = meta.autoEligible === true || conformal.autoEligible === true;
+  const banners = [];
+  if (trust != null && trust < 0.6) {
+    banners.push({
+      key: 'trust',
+      color: 'rgba(245,166,35,0.12)',
+      border: 'rgba(245,166,35,0.35)',
+      textColor: 'var(--accent-yellow)',
+      text: 'Spec trust low — treat contract as provisional.',
+    });
+  }
+  if (ownerRequired) {
+    banners.push({
+      key: 'owner',
+      color: 'rgba(255,71,87,0.1)',
+      border: 'rgba(255,71,87,0.35)',
+      textColor: '#ff4757',
+      text: 'Upstream root cause likely — do not heal victim without review.'
+        + (meta.lagReason ? ` ${meta.lagReason}` : ''),
+    });
+  }
+  if (abstain) {
+    banners.push({
+      key: 'abstain',
+      color: 'rgba(100,149,237,0.12)',
+      border: 'rgba(100,149,237,0.4)',
+      textColor: '#6495ed',
+      text: 'Conformal abstain — risk of wrong auto-apply exceeds budget; human review required.',
+    });
+  }
+  if (autoEligible && !ownerRequired && !abstain) {
+    banners.push({
+      key: 'autoEligible',
+      color: 'rgba(46,204,113,0.1)',
+      border: 'rgba(46,204,113,0.35)',
+      textColor: '#2ecc71',
+      text: 'Auto-eligible — within conformal risk budget (auto-apply still off by default).',
+    });
+  }
+  if (banners.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
+      {banners.map(b => (
+        <div key={b.key} style={{
+          background: b.color, border: `1px solid ${b.border}`, borderRadius: 'var(--radius-sm)',
+          padding: '12px 14px', fontSize: '13px', color: b.textColor, lineHeight: 1.5,
+        }}>
+          {b.text}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function AnalysisDetail({ item, onApprove, onReject, onClose, onStaged }) {
   if (!item) return null;
   const isPending = item.status === 'PENDING_APPROVAL';
   const canDeploy = canDeployAnalysis(item);
+  const meta = analysisMeta(item);
 
   return createPortal(
     <div
@@ -383,6 +464,8 @@ function AnalysisDetail({ item, onApprove, onReject, onClose, onStaged }) {
           <ConfBar value={item.confidence ?? 0} />
         </div>
 
+        <HitlBanners item={item} />
+
         {/* Root Cause */}
         <div style={{ marginBottom: '16px' }}>
           <div style={{ fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '8px' }}>Root Cause</div>
@@ -391,6 +474,9 @@ function AnalysisDetail({ item, onApprove, onReject, onClose, onStaged }) {
             {item.rootCause}
           </div>
         </div>
+
+        {/* Automated diagnose simulation (Phase 7 HITL) */}
+        <SimulationPanel simulation={meta.simulation} title="Automated fix — Before → After" />
 
         {/* Transformation Rules */}
         {item.transformationRules && (

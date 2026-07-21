@@ -10,8 +10,9 @@ import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
-import com.selfhealing.rules.util.RoutingUrlResolver;
+import com.selfhealing.rules.service.PrecedentCommitService;
 import com.selfhealing.rules.service.RouteSyncNotifier;
+import com.selfhealing.rules.util.RoutingUrlResolver;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.Map;
@@ -42,6 +43,7 @@ public class ApprovalEventConsumer {
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper          objectMapper;
     private final RouteSyncNotifier routeSyncNotifier;
+    private final PrecedentCommitService precedentCommitService;
 
     @Value("${rules.default-ttl-hours:48}")
     private int defaultTtlHours;
@@ -68,7 +70,7 @@ public class ApprovalEventConsumer {
         log.info("Deploying approved rule type={} analysisId={}", ruleType, analysisIdStr);
 
         try {
-            switch (ruleType) {
+            boolean deployed = switch (ruleType) {
                 case "ROUTING_OVERRIDE"       -> deployRoutingRule(rules, analysisIdStr, failureIdStr, actedBy);
                 case "CORS_ALLOW"             -> deployCorsRule(rules, analysisIdStr, failureIdStr, actedBy);
                 case "CORS_ORIGIN_OVERRIDE"   -> deployOriginOverrideRule(rules, analysisIdStr, failureIdStr, actedBy);
@@ -81,6 +83,11 @@ public class ApprovalEventConsumer {
                      "RESPONSE_UNWRAP"        -> deployResponseTransformationRule(rules, ruleType, analysisIdStr, failureIdStr, actedBy);
                 case "DSL_PROGRAM"            -> deployDslProgram(rules, analysisIdStr, failureIdStr, actedBy);
                 default                       -> deployTransformationRule(rules, ruleType, analysisIdStr, failureIdStr, actedBy);
+            };
+            if (deployed) {
+                precedentCommitService.commitCandidate(analysisIdStr, failureIdStr, rules);
+            } else {
+                log.warn("Skipping precedent commit — deploy did not succeed for analysis {}", analysisIdStr);
             }
         } catch (Exception e) {
             log.error("Failed to deploy {} rule: {}", ruleType, e.getMessage(), e);
@@ -90,7 +97,7 @@ public class ApprovalEventConsumer {
 
     // ─── ROUTING_OVERRIDE ────────────────────────────────────────────────────
 
-    private void deployRoutingRule(Map<String, Object> rules, String analysisId,
+    private boolean deployRoutingRule(Map<String, Object> rules, String analysisId,
                                     String failureId, String actedBy) {
         String serviceName   = str(rules.get("serviceName"));
         String originalUrl   = str(rules.get("originalUrl"));
@@ -112,7 +119,7 @@ public class ApprovalEventConsumer {
         if (RoutingUrlResolver.isBlank(newUrl)) {
             log.error("Routing rule has no suggestedNewUrl and registry fallback failed — cannot deploy for service '{}'",
                     serviceName);
-            return;
+            return false;
         }
 
         newUrl = RoutingUrlResolver.stripToBaseUrl(newUrl);
@@ -161,11 +168,12 @@ public class ApprovalEventConsumer {
 
         log.info("✓ Routing rule deployed: {} → {} → {} (TTL {}h)", ruleId, serviceName, newUrl, defaultTtlHours);
         routeSyncNotifier.notifyTargetServiceChanged(serviceName, "routing-override-deployed");
+        return true;
     }
 
     // ─── CORS_ALLOW ──────────────────────────────────────────────────────────
 
-    private void deployCorsRule(Map<String, Object> rules, String analysisId,
+    private boolean deployCorsRule(Map<String, Object> rules, String analysisId,
                                  String failureId, String actedBy) {
         String targetService   = str(rules.get("targetService"));
         String newOrigin       = str(rules.get("newOrigin"));
@@ -175,7 +183,7 @@ public class ApprovalEventConsumer {
 
         if (newOrigin == null || newOrigin.isBlank()) {
             log.warn("CORS rule has no newOrigin — cannot deploy");
-            return;
+            return false;
         }
 
         // Deactivate duplicate
@@ -208,11 +216,12 @@ public class ApprovalEventConsumer {
 
         log.info("✓ CORS rule deployed: {} can now call {} (TTL {}h)", newOrigin, targetService, defaultTtlHours);
         routeSyncNotifier.notifyTargetServiceChanged(targetService, "cors-rule-deployed");
+        return true;
     }
 
     // ─── CORS_ORIGIN_OVERRIDE ────────────────────────────────────────────────
 
-    private void deployOriginOverrideRule(Map<String, Object> rules, String analysisId,
+    private boolean deployOriginOverrideRule(Map<String, Object> rules, String analysisId,
                                            String failureId, String actedBy) {
         String sourceService = str(rules.get("sourceService"));
         String targetService = str(rules.get("targetService"));
@@ -234,23 +243,23 @@ public class ApprovalEventConsumer {
         if (isBlank(sourceService) || isBlank(targetService) || isBlank(endpoint)
                 || isBlank(callerOrigin) || isBlank(outboundOrigin)) {
             log.warn("Origin override rule missing required fields — cannot deploy");
-            return;
+            return false;
         }
 
         if (endpoint.contains(" ") || looksLikeHttpMethodPrefix(endpoint)) {
             log.warn("Origin override endpoint must be path-only — rejecting: {}", endpoint);
-            return;
+            return false;
         }
         if (callerOrigin.equalsIgnoreCase(outboundOrigin)) {
             log.warn("Origin override callerOrigin and outboundOrigin must differ — rejecting");
-            return;
+            return false;
         }
 
         String failureRequestOrigin = loadFailureRequestOrigin(failureId);
         if (!isBlank(failureRequestOrigin) && !callerOrigin.equalsIgnoreCase(failureRequestOrigin.trim())) {
             log.warn("Origin override callerOrigin '{}' does not match failure requestOrigin '{}' — rejecting",
                     callerOrigin, failureRequestOrigin);
-            return;
+            return false;
         }
 
         rules.put("endpoint", endpoint);
@@ -287,6 +296,7 @@ public class ApprovalEventConsumer {
         log.info("✓ Origin override deployed: {} → {} rewrites Origin {} → {} on {} (TTL {}h)",
                 sourceService, targetService, callerOrigin, outboundOrigin, endpoint, ttlHours);
         routeSyncNotifier.notifyRouteChanged(sourceService, targetService, endpoint, "origin-override-deployed");
+        return true;
     }
 
     private Object[] loadFailureRoute(String failureId) {
@@ -338,14 +348,14 @@ public class ApprovalEventConsumer {
     // ─── RESPONSE TRANSFORMATION ─────────────────────────────────────────────
 
     @SuppressWarnings("unchecked")
-    private void deployResponseTransformationRule(Map<String, Object> rules, String ruleType,
+    private boolean deployResponseTransformationRule(Map<String, Object> rules, String ruleType,
                                                    String analysisId, String failureId, String actedBy) throws Exception {
         Object[] failureData = jdbcTemplate.queryForObject(
             "SELECT service_a, service_b, endpoint FROM api_failures WHERE id = ?::uuid",
             (rs, row) -> new Object[]{rs.getString(1), rs.getString(2), rs.getString(3)},
             failureId);
 
-        if (failureData == null) { log.error("Failure not found: {}", failureId); return; }
+        if (failureData == null) { log.error("Failure not found: {}", failureId); return false; }
 
         String serviceA  = (String) failureData[0];
         String serviceB  = (String) failureData[1];
@@ -379,17 +389,18 @@ public class ApprovalEventConsumer {
         log.info("✓ Response transformation rule deployed: {} type={} for {}→{}{} (TTL {}h)",
             ruleId, ruleType, serviceA, serviceB, endpoint, defaultTtlHours);
         routeSyncNotifier.notifyRouteChanged(serviceA, serviceB, endpoint, "response-rule-deployed");
+        return true;
     }
 
     @SuppressWarnings("unchecked")
-    private void deployTransformationRule(Map<String, Object> rules, String ruleType,
+    private boolean deployTransformationRule(Map<String, Object> rules, String ruleType,
                                            String analysisId, String failureId, String actedBy) throws Exception {
         Object[] failureData = jdbcTemplate.queryForObject(
             "SELECT service_a, service_b, endpoint FROM api_failures WHERE id = ?::uuid",
             (rs, row) -> new Object[]{rs.getString(1), rs.getString(2), rs.getString(3)},
             failureId);
 
-        if (failureData == null) { log.error("Failure not found: {}", failureId); return; }
+        if (failureData == null) { log.error("Failure not found: {}", failureId); return false; }
 
         String serviceA = (String) failureData[0];
         String serviceB = (String) failureData[1];
@@ -423,6 +434,7 @@ public class ApprovalEventConsumer {
         log.info("✓ Transformation rule deployed: {} type={} for {}→{}{} (TTL {}h)",
             ruleId, ruleType, serviceA, serviceB, endpoint, defaultTtlHours);
         routeSyncNotifier.notifyRouteChanged(serviceA, serviceB, endpoint, "transformation-rule-deployed");
+        return true;
     }
 
     // ─── DSL_PROGRAM (MendrScript) ───────────────────────────────────────────
@@ -436,19 +448,19 @@ public class ApprovalEventConsumer {
      * never reach the data plane even if it slipped past synthesis-time checks.
      */
     @SuppressWarnings("unchecked")
-    private void deployDslProgram(Map<String, Object> rules, String analysisId,
+    private boolean deployDslProgram(Map<String, Object> rules, String analysisId,
                                   String failureId, String actedBy) throws Exception {
         Object opsRaw = rules.get("ops");
         if (!(opsRaw instanceof java.util.List<?> ops) || ops.isEmpty()) {
             log.error("DSL_PROGRAM has no ops[] — refusing to deploy (analysisId={})", analysisId);
-            return;
+            return false;
         }
 
         Object[] failureData = jdbcTemplate.queryForObject(
             "SELECT service_a, service_b, endpoint FROM api_failures WHERE id = ?::uuid",
             (rs, row) -> new Object[]{rs.getString(1), rs.getString(2), rs.getString(3)},
             failureId);
-        if (failureData == null) { log.error("Failure not found: {}", failureId); return; }
+        if (failureData == null) { log.error("Failure not found: {}", failureId); return false; }
 
         String serviceA = (String) failureData[0];
         String serviceB = (String) failureData[1];
@@ -485,6 +497,7 @@ public class ApprovalEventConsumer {
         log.info("✓ MendrScript DSL_PROGRAM deployed: {} ({} ops) for {}→{}{} (TTL {}h)",
             ruleId, ops.size(), serviceA, serviceB, endpoint, defaultTtlHours);
         routeSyncNotifier.notifyRouteChanged(serviceA, serviceB, endpoint, "dsl-program-deployed");
+        return true;
     }
 
     // ─── Helpers ─────────────────────────────────────────────────────────────

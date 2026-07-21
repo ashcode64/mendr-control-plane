@@ -266,6 +266,79 @@ class FailureIngestionServiceTest {
         verify(kafkaTemplate, never()).send(any(), any(), any());
     }
 
+    @Test
+    void ingestPrefersProblemDetailOverLegacyErrorMessage() {
+        IngestFailureRequest request = IngestFailureRequest.builder()
+                .sourceService("order-service")
+                .targetService("payment-service")
+                .endpoint("/api/payments/process")
+                .httpMethod("POST")
+                .errorCode(400)
+                .errorType("SCHEMA_MISMATCH_FAILURE")
+                .failureCategory("SCHEMA_MISMATCH")
+                .errorMessage("legacy message should lose")
+                .problemDetail(Map.of(
+                        "type", "https://example.com/problems/validation",
+                        "title", "Validation",
+                        "status", 400,
+                        "detail", "RFC detail wins",
+                        "json_path", "/amount",
+                        "spec_trust", 0.9
+                ))
+                .correlationId("corr-1")
+                .requestId("req-1")
+                .responseHeaders(Map.of("Content-Type", "application/problem+json"))
+                .requestPayload(Map.of("amount", "x"))
+                .build();
+
+        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(registry.loadRegisteredBaseUrl("payment-service"))
+                .thenReturn(Optional.of("http://localhost:8091"));
+        when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        failureIngestionService.ingest(request);
+
+        ArgumentCaptor<ApiFailure> failureCaptor = ArgumentCaptor.forClass(ApiFailure.class);
+        verify(failureRepository).save(failureCaptor.capture());
+        assertThat(failureCaptor.getValue().getErrorMessage()).isEqualTo("RFC detail wins");
+
+        ApiFailureEvent event = captureEvent();
+        assertThat(event.getProblemDetail()).containsEntry("detail", "RFC detail wins");
+        assertThat(event.getProblemDetail()).containsEntry("json_path", "/amount");
+        assertThat(event.getProblemDetail()).containsEntry("spec_trust", 0.9);
+        assertThat(event.getCorrelationId()).isEqualTo("corr-1");
+        assertThat(event.getResponseHeaders()).containsEntry("Content-Type", "application/problem+json");
+    }
+
+    @Test
+    void ingestFallsBackToErrorMessageWhenDetailAbsent() {
+        IngestFailureRequest request = IngestFailureRequest.builder()
+                .sourceService("order-service")
+                .targetService("payment-service")
+                .endpoint("/api/payments/process")
+                .httpMethod("POST")
+                .errorCode(500)
+                .errorType("UNKNOWN_FAILURE")
+                .failureCategory("UNKNOWN")
+                .errorMessage("legacy only")
+                .problemDetail(Map.of("type", "https://example.com/problems/x", "title", "X", "status", 500))
+                .requestPayload(Map.of())
+                .build();
+
+        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(registry.loadRegisteredBaseUrl("payment-service"))
+                .thenReturn(Optional.of("http://localhost:8091"));
+        when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+
+        failureIngestionService.ingest(request);
+
+        ArgumentCaptor<ApiFailure> failureCaptor = ArgumentCaptor.forClass(ApiFailure.class);
+        verify(failureRepository).save(failureCaptor.capture());
+        assertThat(failureCaptor.getValue().getErrorMessage()).isEqualTo("legacy only");
+    }
+
     private static ProxyRequest proxyRequest() {
         return ProxyRequest.builder()
                 .sourceService("order-service")

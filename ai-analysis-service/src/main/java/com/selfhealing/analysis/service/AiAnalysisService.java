@@ -5,6 +5,9 @@ import com.selfhealing.analysis.model.AnalysisResult;
 import com.selfhealing.analysis.repository.AnalysisResultRepository;
 import com.selfhealing.analysis.service.context.StructuredContextAssembler;
 import com.selfhealing.analysis.service.context.StructuredFailureContext;
+import com.selfhealing.analysis.service.safety.SafetyGateResult;
+import com.selfhealing.analysis.service.safety.SafetyGateService;
+import com.selfhealing.analysis.service.safety.SafetyScore;
 import com.selfhealing.analysis.service.tool.AnalysisToolResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,9 +43,19 @@ public class AiAnalysisService {
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final JdbcTemplate             jdbcTemplate;
     private final FailureContextEnricher   contextEnricher;
+    private final ErrorSignatureAssembler  errorSignatureAssembler;
+    private final SafetyGateService        safetyGateService;
+    private final ApprovalDeployPublisher  approvalDeployPublisher;
 
+    /** Legacy fallback only — Safety Gate / conformal owns the approval boundary. */
     @Value("${anthropic.confidence-threshold:0.75}")
     private double confidenceThreshold;
+
+    @Value("${mendr.conversation.diagnose-url:}")
+    private String diagnoseUrl;
+
+    @Value("${gateway.internal.api-key:}")
+    private String gatewayInternalApiKey;
 
     private static final String TOPIC = "api.analysis.results";
 
@@ -114,18 +127,28 @@ public class AiAnalysisService {
         String category = ctx.category();
         log.info("Analysing failure {} (category: {})", event.getFailureId(), category);
 
-        String systemPrompt = switch (category) {
-            case "ROUTING"           -> SYS_ROUTING;
-            case "CORS"              -> SYS_CORS;
-            case "CORS_UPSTREAM"     -> SYS_CORS_UPSTREAM;
-            case "RESPONSE_MISMATCH" -> SYS_RESPONSE;
-            case "SCHEMA_MISMATCH"   -> SYS_SCHEMA;
-            default                  -> SYS_UNKNOWN;
-        };
+        ErrorSignature signature = errorSignatureAssembler.assemble(ctx);
 
-        StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
-        AnalysisToolResult toolResult = llmClient.analyze(systemPrompt, structured, ctx);
-        AnalysisResult result = harmonizeAndSave(toolResult, ctx);
+        // Prefer LangGraph /diagnose when configured (verify+simulate path).
+        // Falls back to legacy category LLM path on missing URL or diagnose failure.
+        AnalysisToolResult toolResult = null;
+        if (diagnoseUrl != null && !diagnoseUrl.isBlank()) {
+            toolResult = tryDiagnose(signature, ctx);
+        }
+        if (toolResult == null) {
+            String systemPrompt = switch (category) {
+                case "ROUTING"           -> SYS_ROUTING;
+                case "CORS"              -> SYS_CORS;
+                case "CORS_UPSTREAM"     -> SYS_CORS_UPSTREAM;
+                case "RESPONSE_MISMATCH" -> SYS_RESPONSE;
+                case "SCHEMA_MISMATCH"   -> SYS_SCHEMA;
+                default                  -> SYS_UNKNOWN;
+            };
+            StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
+            toolResult = llmClient.analyze(systemPrompt, structured, ctx);
+        }
+
+        AnalysisResult result = harmonizeAndSave(toolResult, ctx, signature);
         publishResult(result, event, ctx);
         return result;
     }
@@ -138,12 +161,17 @@ public class AiAnalysisService {
      * tool path makes the rule TYPE unambiguous, so harmonize/calibrate now act as
      * a rarely-firing backstop rather than a routine correction.
      */
-    private AnalysisResult harmonizeAndSave(AnalysisToolResult toolResult, FailureAnalysisContext ctx) {
+    private AnalysisResult harmonizeAndSave(AnalysisToolResult toolResult, FailureAnalysisContext ctx,
+                                            ErrorSignature signature) {
         ApiFailureEvent event = ctx.event();
 
         Map<String, Object> transformationRules = toolResult.transformationRules() != null
                 ? new LinkedHashMap<>(toolResult.transformationRules())
                 : new LinkedHashMap<>();
+
+        boolean refuseAutoHeal = Boolean.TRUE.equals(transformationRules.remove("_refuseAutoHeal"))
+                || Boolean.TRUE.equals(transformationRules.remove("_owner_action_required"));
+        Object lagReasonMeta = transformationRules.remove("_lagReason");
 
         // Repair pointers that leaked the context-wrapper prefix (e.g. the model
         // emitting /actualRequestPayload/tag_sent instead of /tag_sent) before any
@@ -173,25 +201,28 @@ public class AiAnalysisService {
                 transformationRules, event, ctx.upstreamAllowedOrigins(), event.getRequestPayload());
         boolean validationFailed = !validation.deployable();
         if (validationFailed) {
-            confidence = Math.min(confidence, confidenceThreshold - 0.01);
             log.warn("Rule validation failed for {}: {}", event.getFailureId(), validation.reason());
         }
 
         // Deterministic effect preview: a restructure rule that cannot change the
-        // failing payload is an ineffective suggestion. Surface it and keep it below
-        // the approval threshold so a no-op "fix" is never auto-presented as deployable.
+        // failing payload is an ineffective suggestion. Surface it — SafetyGate
+        // rejects non-effective suggestions without the old confidenceThreshold clamp.
         RuleValidator.EffectPreview effect = RuleValidator.describeEffect(
                 transformationRules, event.getRequestPayload());
         if (!effect.effective()) {
-            confidence = Math.min(confidence, confidenceThreshold - 0.01);
             log.warn("Analysis suggestion for {} is a no-op against the failing payload: {}",
                     event.getFailureId(), effect.reason());
         }
 
         boolean routingUndeployable = isRoutingWithoutTargetUrl(transformationRules, event);
         if (routingUndeployable) {
-            confidence = Math.min(confidence, confidenceThreshold - 0.01);
-            log.warn("Routing analysis for failure {} has no deployable suggestedNewUrl — marking below approval threshold",
+            log.warn("Routing analysis for failure {} has no deployable suggestedNewUrl",
+                    event.getFailureId());
+        }
+
+        if (refuseAutoHeal) {
+            // Keep confidence informative but queue for human review (PENDING_APPROVAL).
+            log.info("refuseAutoHeal / owner_action_required for {} — queuing PENDING_APPROVAL with HITL banners",
                     event.getFailureId());
         }
 
@@ -201,6 +232,47 @@ public class AiAnalysisService {
             case CLAUDE -> AnalysisResult.AnalysisSource.CLAUDE;
         };
 
+        Map<String, Object> meta = buildAnalysisMetadata(ctx, validation.reason(), effect, signature);
+        if (refuseAutoHeal) {
+            meta.put("refuseAutoHeal", true);
+            meta.put("owner_action_required", true);
+            if (lagReasonMeta != null) meta.put("lagReason", lagReasonMeta);
+        }
+        Object simulationMeta = transformationRules.remove("_simulation");
+        Object verificationMeta = transformationRules.remove("_verification");
+        Object lagEvidenceMeta = transformationRules.remove("_lagEvidence");
+        Object metamorphicMeta = transformationRules.remove("_metamorphic");
+        Object ddminMeta = transformationRules.remove("_ddmin");
+        Object banditMeta = transformationRules.remove("_bandit");
+        if (simulationMeta != null) meta.put("simulation", simulationMeta);
+        if (verificationMeta != null) meta.put("verification", verificationMeta);
+        if (lagEvidenceMeta != null) meta.put("lagEvidence", lagEvidenceMeta);
+        if (metamorphicMeta != null) meta.put("metamorphic", metamorphicMeta);
+        if (ddminMeta != null) meta.put("ddmin", ddminMeta);
+        if (banditMeta != null) meta.put("bandit", banditMeta);
+        if (signature != null) {
+            meta.put("spec_trust", signature.specTrust());
+        }
+
+        Double metamorphicPassRate = extractMetamorphicPassRate(metamorphicMeta);
+        double deterministicAgreement = (!validationFailed && effect.effective() && !routingUndeployable)
+                ? Math.max(modelConfidence, 0.85)
+                : 0.35;
+        boolean hitlReview = refuseAutoHeal
+                || "HITL_REVIEW".equals(toolResult.ruleType());
+        SafetyScore safetyScore = safetyGateService.buildScore(
+                modelConfidence,
+                deterministicAgreement,
+                metamorphicPassRate,
+                signature != null ? signature.specTrust() : null,
+                0.5);
+        SafetyGateResult gate = safetyGateService.evaluate(
+                refuseAutoHeal, validationFailed, routingUndeployable, effect.effective(),
+                hitlReview, safetyScore);
+        gate.mergeInto(meta);
+
+        AnalysisResult.AnalysisStatus status = gate.status();
+
         AnalysisResult result = AnalysisResult.builder()
                 .failureId(event.getFailureId())
                 .rootCause(rootCause)
@@ -209,12 +281,54 @@ public class AiAnalysisService {
                 .suggestedPermanentFix(permanentFix)
                 .aiModel(toolResult.model())
                 .analysisSource(source)
-                .analysisMetadata(buildAnalysisMetadata(ctx, validation.reason(), effect))
-                .status(confidence >= confidenceThreshold && !validationFailed && !routingUndeployable && effect.effective()
-                        ? AnalysisResult.AnalysisStatus.PENDING_APPROVAL
-                        : AnalysisResult.AnalysisStatus.REJECTED)
+                .analysisMetadata(meta)
+                .status(status)
                 .build();
-        return analysisRepository.save(result);
+        result = analysisRepository.save(result);
+
+        // Plan 8.0 step 5: conformal accept + auto-apply → same deploy path as human Approve.
+        if (status == AnalysisResult.AnalysisStatus.APPROVED) {
+            approvalDeployPublisher.publishApproved(result, "safety-gate-auto-apply");
+        }
+        return result;
+    }
+
+    /**
+     * HITL refuse / owner_action flags always land in {@code PENDING_APPROVAL} so humans
+     * can review in the queue — even when validation, effect, or confidence would reject.
+     *
+     * @deprecated Prefer {@link SafetyGateService#evaluate}; retained for unit tests and
+     *             callers that lack a full SafetyScore.
+     */
+    @Deprecated
+    static AnalysisResult.AnalysisStatus resolveApprovalStatus(
+            boolean refuseAutoHeal,
+            boolean validationFailed,
+            boolean routingUndeployable,
+            boolean effectEffective,
+            double confidence,
+            double confidenceThreshold) {
+        if (refuseAutoHeal) {
+            return AnalysisResult.AnalysisStatus.PENDING_APPROVAL;
+        }
+        boolean approveEligible = !validationFailed && !routingUndeployable && effectEffective
+                && confidence >= confidenceThreshold;
+        return approveEligible
+                ? AnalysisResult.AnalysisStatus.PENDING_APPROVAL
+                : AnalysisResult.AnalysisStatus.REJECTED;
+    }
+
+    @SuppressWarnings("unchecked")
+    static Double extractMetamorphicPassRate(Object metamorphicMeta) {
+        if (!(metamorphicMeta instanceof Map<?, ?> m)) return null;
+        Object rate = m.get("passRate");
+        if (rate instanceof Number n) return n.doubleValue();
+        Object passed = m.get("passed");
+        Object total = m.get("total");
+        if (passed instanceof Number p && total instanceof Number t && t.doubleValue() > 0) {
+            return p.doubleValue() / t.doubleValue();
+        }
+        return null;
     }
 
     /**
@@ -222,7 +336,8 @@ public class AiAnalysisService {
      * it never travels into a compiled route snapshot. Lives on its own column.
      */
     private Map<String, Object> buildAnalysisMetadata(FailureAnalysisContext ctx, String validationReason,
-                                                      RuleValidator.EffectPreview effect) {
+                                                      RuleValidator.EffectPreview effect,
+                                                      ErrorSignature signature) {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("upstreamAllowedOrigins", ctx.upstreamAllowedOrigins());
         meta.put("mendrEdgeAllowedOrigins", ctx.mendrEdgeAllowedOrigins());
@@ -233,7 +348,217 @@ public class AiAnalysisService {
             meta.put("effective", false);
             meta.put("noOpReason", effect.reason());
         }
+        if (signature != null) {
+            meta.put("errorSignature", signature.toMap());
+            meta.put("sketchHint", signature.toSketchHint());
+        }
         return meta;
+    }
+
+    /**
+     * Call conversation-engine POST /diagnose with the ErrorSignature.
+     * Returns null on any failure so the legacy LLM path remains the backstop.
+     */
+    @SuppressWarnings("unchecked")
+    private AnalysisToolResult tryDiagnose(ErrorSignature signature, FailureAnalysisContext ctx) {
+        try {
+            java.net.http.HttpClient client = java.net.http.HttpClient.newBuilder()
+                    .connectTimeout(java.time.Duration.ofSeconds(5))
+                    .build();
+            Map<String, Object> body = new LinkedHashMap<>();
+            Map<String, Object> sigMap = new LinkedHashMap<>(signature.toMap());
+            if (ctx.event().getCorrelationId() != null) {
+                sigMap.put("correlationId", ctx.event().getCorrelationId());
+            }
+            if (ctx.event().getServiceA() != null) {
+                sigMap.put("sourceService", ctx.event().getServiceA());
+            }
+            body.put("errorSignature", sigMap);
+
+            List<Map<String, Object>> cases = new ArrayList<>();
+            if (ctx.event().getRequestPayload() != null && !ctx.event().getRequestPayload().isEmpty()) {
+                cases.add(Map.of("input", ctx.event().getRequestPayload()));
+            }
+            if ("RESPONSE_MISMATCH".equalsIgnoreCase(ctx.category())) {
+                Map<String, Object> resp = extractResponseForCases(ctx.event().getResponsePayload());
+                if (!resp.isEmpty()) {
+                    cases.add(Map.of("input", resp));
+                }
+            }
+            if (cases.isEmpty()) {
+                cases.add(Map.of("input", Map.of()));
+            }
+            body.put("cases", cases);
+
+            boolean deterministic = (ctx.schemaDiff() != null && ctx.schemaDiff().hasDeterministicRule())
+                    || (ctx.responseDiff() != null && ctx.responseDiff().hasDeterministicRule())
+                    || (ctx.corsUpstreamDiff() != null && ctx.corsUpstreamDiff().hasDeterministicRule())
+                    || (ctx.corsEdgeDiff() != null && ctx.corsEdgeDiff().hasDeterministicRule());
+            boolean multiHop = isMultiHop(ctx);
+            body.put("complexity", Map.of(
+                    "deterministicDiff", deterministic,
+                    "category", ctx.category() != null ? ctx.category() : "UNKNOWN",
+                    "multiHop", multiHop));
+
+            com.fasterxml.jackson.databind.ObjectMapper mapper =
+                    new com.fasterxml.jackson.databind.ObjectMapper();
+            String json = mapper.writeValueAsString(body);
+            java.net.http.HttpRequest.Builder req = java.net.http.HttpRequest.newBuilder()
+                    .uri(java.net.URI.create(diagnoseUrl.endsWith("/diagnose")
+                            ? diagnoseUrl : diagnoseUrl.replaceAll("/$", "") + "/diagnose"))
+                    .timeout(java.time.Duration.ofSeconds(60))
+                    .header("Content-Type", "application/json")
+                    .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json));
+            String internalKey = gatewayInternalApiKey;
+            if (internalKey == null || internalKey.isBlank()) {
+                internalKey = System.getenv("GATEWAY_INTERNAL_API_KEY");
+            }
+            if (internalKey != null && !internalKey.isBlank()) {
+                req.header("X-Internal-Api-Key", internalKey);
+            }
+
+            java.net.http.HttpResponse<String> resp = client.send(req.build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+                log.warn("Diagnose HTTP {} for {}: {}", resp.statusCode(),
+                        ctx.event().getFailureId(), resp.body());
+                return null;
+            }
+            Map<String, Object> parsed = mapper.readValue(resp.body(), Map.class);
+            AnalysisToolResult interpreted = interpretDiagnoseResponse(parsed);
+            if (interpreted == null) {
+                log.info("Diagnose returned non-ready without HITL refuse for {} — status={}",
+                        ctx.event().getFailureId(), parsed.getOrDefault("status", ""));
+            } else if (interpreted.transformationRules() != null
+                    && Boolean.TRUE.equals(interpreted.transformationRules().get("_refuseAutoHeal"))) {
+                log.info("Diagnose HITL refuse for {} — queue PENDING_APPROVAL (status={})",
+                        ctx.event().getFailureId(), parsed.getOrDefault("status", ""));
+            }
+            return interpreted;
+        } catch (Exception e) {
+            log.warn("Diagnose call failed for {}: {}", ctx.event().getFailureId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Interpret conversation-engine {@code /diagnose} JSON.
+     * Returns {@code null} only when the response is not ready <em>and</em> carries no
+     * HITL refuse flags (legacy LLM remains the backstop). When refuse/owner_action is set,
+     * always return a tool result — even with no program — so humans review instead of
+     * LLM inventing a victim heal.
+     */
+    @SuppressWarnings("unchecked")
+    static AnalysisToolResult interpretDiagnoseResponse(Map<String, Object> parsed) {
+        if (parsed == null || parsed.isEmpty()) return null;
+
+        boolean refuseAutoHeal = diagnoseRefuse(parsed);
+        String status = String.valueOf(parsed.getOrDefault("status", ""));
+        Object program = parsed.get("program");
+        boolean ready = program instanceof Map<?, ?> && "ready".equals(status);
+
+        if (!ready && !refuseAutoHeal) {
+            return null;
+        }
+
+        Map<String, Object> rules = new LinkedHashMap<>();
+        String ruleType;
+        if (program instanceof Map<?, ?> prog) {
+            rules.putAll((Map<String, Object>) prog);
+            rules.put("type", "DSL_PROGRAM");
+            ruleType = "DSL_PROGRAM";
+        } else {
+            // HITL-only: no deployable program — still surfaces banners + PENDING_APPROVAL.
+            rules.put("type", "HITL_REVIEW");
+            ruleType = "HITL_REVIEW";
+        }
+
+        String rationale = parsed.get("rationale") != null
+                ? parsed.get("rationale").toString()
+                : "Diagnosed via LangGraph verify/simulate loop";
+        double conf = parsed.get("confidence") instanceof Number n ? n.doubleValue() : (ready ? 0.85 : 0.4);
+        String model = String.valueOf(parsed.getOrDefault("model", "conversation-engine"));
+
+        if (refuseAutoHeal) {
+            String lag = parsed.get("lagReason") != null ? parsed.get("lagReason").toString() : null;
+            if (lag == null && parsed.get("diagnosis") instanceof Map<?, ?> diag
+                    && diag.get("lagReason") != null) {
+                lag = diag.get("lagReason").toString();
+            }
+            rationale = "HITL required — refuseAutoHeal (upstream lag). "
+                    + (lag != null ? lag + " " : "")
+                    + rationale;
+            rules.put("_refuseAutoHeal", true);
+            rules.put("_owner_action_required", true);
+            if (lag != null) rules.put("_lagReason", lag);
+        }
+
+        if (parsed.get("simulation") != null) {
+            rules.put("_simulation", parsed.get("simulation"));
+        }
+        if (parsed.get("verification") != null) {
+            rules.put("_verification", parsed.get("verification"));
+        }
+        if (parsed.get("metamorphic") != null) {
+            rules.put("_metamorphic", parsed.get("metamorphic"));
+        }
+        if (parsed.get("ddmin") != null) {
+            rules.put("_ddmin", parsed.get("ddmin"));
+        }
+        if (parsed.get("bandit") != null) {
+            rules.put("_bandit", parsed.get("bandit"));
+        }
+        Object diagnosis = parsed.get("diagnosis");
+        if (diagnosis instanceof Map<?, ?> dmap) {
+            if (dmap.get("lagEvidence") != null) {
+                rules.put("_lagEvidence", dmap.get("lagEvidence"));
+            }
+        }
+
+        AnalysisToolResult.Source source = model.toLowerCase().contains("gemini")
+                ? AnalysisToolResult.Source.GEMINI
+                : AnalysisToolResult.Source.CLAUDE;
+        return new AnalysisToolResult(
+                source,
+                model,
+                ruleType,
+                rules,
+                rationale,
+                conf,
+                refuseAutoHeal
+                        ? "HITL required: upstream root cause — do not auto-heal downstream victim"
+                        : "Approve verified MendrScript program");
+    }
+
+    static boolean diagnoseRefuse(Map<String, Object> parsed) {
+        if (parsed == null) return false;
+        if (Boolean.TRUE.equals(parsed.get("refuseAutoHeal"))
+                || Boolean.TRUE.equals(parsed.get("owner_action_required"))) {
+            return true;
+        }
+        if (parsed.get("diagnosis") instanceof Map<?, ?> diag) {
+            return Boolean.TRUE.equals(diag.get("refuseAutoHeal"))
+                    || Boolean.TRUE.equals(diag.get("owner_action_required"));
+        }
+        return false;
+    }
+
+    /** Multi-hop when topology shows inbound or outbound neighbors beyond the failing edge. */
+    private static boolean isMultiHop(FailureAnalysisContext ctx) {
+        if (ctx.topology() == null) return false;
+        var topo = ctx.topology();
+        int neighbors = 0;
+        if (topo.sourceOutboundCalls() != null) neighbors += topo.sourceOutboundCalls().size();
+        if (topo.targetInboundCallers() != null) neighbors += topo.targetInboundCallers().size();
+        return neighbors > 1;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> extractResponseForCases(Map<String, Object> responsePayload) {
+        if (responsePayload == null || responsePayload.isEmpty()) return Map.of();
+        Object raw = responsePayload.get("raw");
+        if (raw instanceof Map<?, ?> m) return (Map<String, Object>) m;
+        return responsePayload;
     }
 
     private double calibrateConfidence(
@@ -259,6 +584,11 @@ public class AiAnalysisService {
             return Math.max(effective, Math.max(modelConfidence, 0.9));
         }
         if (ctx.schemaDiff().hasDeterministicRule()) {
+            // Verified MendrScript from /diagnose is an intentional alternative to
+            // the classic FIELD_RENAME/TYPE_COERCE map — do not penalize it.
+            if ("DSL_PROGRAM".equals(aiType)) {
+                return Math.max(effective, Math.max(modelConfidence, 0.85));
+            }
             String expected = str(ctx.schemaDiff().toTransformationRules().get("type")).toUpperCase();
             if (!expected.isBlank() && !expected.equals(aiType)) {
                 return Math.min(effective, 0.5);
@@ -336,11 +666,16 @@ public class AiAnalysisService {
     /**
      * When structured schema diff finds a clear primary issue, prefer that rule over
      * a conflicting AI suggestion (e.g. FIELD_RENAME when amount is simply missing).
+     * Verified MendrScript programs ({@code DSL_PROGRAM}) from /diagnose are preserved —
+     * they already passed verify_program + simulate_transform.
      */
     private Map<String, Object> harmonizeWithSchemaDiff(
             Map<String, Object> aiRules, SchemaDiffResult schemaDiff, UUID failureId) {
 
         if (schemaDiff == null || !schemaDiff.hasDeterministicRule()) {
+            return aiRules;
+        }
+        if (isDslProgram(aiRules)) {
             return aiRules;
         }
 
@@ -376,6 +711,9 @@ public class AiAnalysisService {
         if (responseDiff == null || !responseDiff.hasDeterministicRule()) {
             return aiRules;
         }
+        if (isDslProgram(aiRules)) {
+            return aiRules;
+        }
 
         Map<String, Object> deterministic = responseDiff.toTransformationRules();
         if (deterministic.isEmpty()) return aiRules;
@@ -397,6 +735,13 @@ public class AiAnalysisService {
             }
         });
         return merged;
+    }
+
+    private static boolean isDslProgram(Map<String, Object> rules) {
+        if (rules == null || rules.isEmpty()) return false;
+        if (!"DSL_PROGRAM".equalsIgnoreCase(str(rules.get("type")))) return false;
+        Object ops = rules.get("ops");
+        return ops instanceof List<?> list && !list.isEmpty();
     }
 
     private static boolean isEmptyRulePayload(Map<String, Object> rules) {

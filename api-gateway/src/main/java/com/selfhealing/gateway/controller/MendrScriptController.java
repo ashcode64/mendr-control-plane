@@ -2,6 +2,7 @@ package com.selfhealing.gateway.controller;
 
 import com.selfhealing.gateway.transform.dsl.MendrProgram;
 import com.selfhealing.gateway.transform.dsl.MendrScriptVerifier;
+import com.selfhealing.gateway.transform.dsl.MetamorphicPropertyVerifier;
 import com.selfhealing.gateway.transform.dsl.TransformSimulator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -26,6 +27,7 @@ public class MendrScriptController {
 
     private final MendrScriptVerifier verifier;
     private final TransformSimulator simulator;
+    private final MetamorphicPropertyVerifier metamorphicVerifier;
 
     @PostMapping("/verify")
     public ResponseEntity<MendrScriptVerifier.VerificationResult> verify(@RequestBody MendrProgram program) {
@@ -43,5 +45,18 @@ public class MendrScriptController {
         }
         List<TransformSimulator.Case> cases = req.cases() == null ? List.of() : req.cases();
         return ResponseEntity.ok(simulator.simulate(req.program(), cases));
+    }
+
+    public record VerifyPropertiesRequest(MendrProgram program, List<Object> inputs) {}
+
+    /** Offline metamorphic / property checks — never live-probes upstreams. */
+    @PostMapping("/verify-properties")
+    public ResponseEntity<?> verifyProperties(@RequestBody VerifyPropertiesRequest req) {
+        MendrScriptVerifier.VerificationResult v = verifier.verify(req.program());
+        if (!v.valid()) {
+            return ResponseEntity.badRequest().body(v);
+        }
+        return ResponseEntity.ok(metamorphicVerifier.verifyProperties(
+                req.program(), req.inputs() == null ? List.of() : req.inputs()));
     }
 }

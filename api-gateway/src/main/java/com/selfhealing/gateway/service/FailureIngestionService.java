@@ -3,6 +3,7 @@ package com.selfhealing.gateway.service;
 import com.selfhealing.gateway.config.GatewayInternalProperties;
 import com.selfhealing.gateway.dto.ApiFailureEvent;
 import com.selfhealing.gateway.dto.IngestFailureRequest;
+import com.selfhealing.gateway.dto.ProblemDetail;
 import com.selfhealing.gateway.dto.ProxyRequest;
 import com.selfhealing.gateway.model.ApiFailure;
 import com.selfhealing.gateway.repository.ApiFailureRepository;
@@ -70,9 +71,12 @@ public class FailureIngestionService {
             targetServiceUrl = attemptedUrl;
         }
 
-        ApiFailure failure = persistFromIngest(request, proxy);
+        Map<String, Object> problemDetail = normalizeProblemDetail(request.getProblemDetail());
+        ApiFailure failure = persistFromIngest(request, proxy, problemDetail);
         publishEvent(failure, category, attemptedUrl, origin, targetServiceUrl, registeredBase,
-                discoveredUrl, request.getCorsBlockedAt(), request.getUpstreamOriginSent());
+                discoveredUrl, request.getCorsBlockedAt(), request.getUpstreamOriginSent(),
+                request.getCorrelationId(), request.getRequestId(),
+                problemDetail, request.getResponseHeaders());
 
         int ttl = internalProperties.getFailureDedupTtlSeconds();
         if (ttl > 0) {
@@ -95,14 +99,15 @@ public class FailureIngestionService {
 
         ApiFailure failure = persistFailure(req, 503, "ROUTING_FAILURE", message, null);
         publishEvent(failure, "ROUTING", attemptedUrl, null, attemptedUrl,
-                enrichment.registeredBaseUrl(), enrichment.dnsProbeDiscoveryUrl(), null, null);
+                enrichment.registeredBaseUrl(), enrichment.dnsProbeDiscoveryUrl(),
+                null, null, null, null, null, null);
         return failure;
     }
 
     public ApiFailure recordCorsFailure(ProxyRequest req, String origin, int code, String message) {
         log.warn("CORS FAILURE: origin '{}' blocked → {} — {}", origin, req.getTargetService(), message);
         ApiFailure failure = persistFailure(req, code, "CORS_FAILURE", message, null);
-        publishEvent(failure, "CORS", null, origin, null, null, null, "EDGE", null);
+        publishEvent(failure, "CORS", null, origin, null, null, null, "EDGE", null, null, null, null, null);
         return failure;
     }
 
@@ -111,6 +116,18 @@ public class FailureIngestionService {
             Map<String, Object> rawBody,
             Map<String, Object> transformedBody,
             ResponseMismatch mismatch) {
+        return recordResponseMismatch(req, rawBody, transformedBody, mismatch, null, null, null, null);
+    }
+
+    public ApiFailure recordResponseMismatch(
+            ProxyRequest req,
+            Map<String, Object> rawBody,
+            Map<String, Object> transformedBody,
+            ResponseMismatch mismatch,
+            Map<String, Object> problemDetail,
+            String correlationId,
+            String requestId,
+            Map<String, Object> responseHeaders) {
 
         String message = "Response contract mismatch: " + mismatch.summary();
         log.warn("RESPONSE MISMATCH: {} → {}{} — {}",
@@ -122,9 +139,14 @@ public class FailureIngestionService {
         respPayload.put("missingFields", mismatch.missingFields());
         respPayload.put("renameMappings", mismatch.renameMappings());
         respPayload.put("typeCoercions", mismatch.typeCoercions());
+        Map<String, Object> normalizedPd = normalizeProblemDetail(problemDetail);
+        if (normalizedPd != null && !normalizedPd.isEmpty()) {
+            respPayload.put("problemDetail", normalizedPd);
+        }
 
         ApiFailure failure = persistFailureWithResponse(req, 502, "RESPONSE_MISMATCH", message, respPayload);
-        publishEvent(failure, "RESPONSE_MISMATCH", null, null, null, null, null, null, null);
+        publishEvent(failure, "RESPONSE_MISMATCH", null, null, null, null, null, null, null,
+                correlationId, requestId, normalizedPd, responseHeaders);
         return failure;
     }
 
@@ -134,7 +156,7 @@ public class FailureIngestionService {
         log.warn("FAILURE [{}]: {}->{}{} → {} {}",
                 category, req.getSourceService(), req.getTargetService(), req.getEndpoint(), code, message);
         ApiFailure failure = persistFailure(req, code, type, message, responseBody);
-        publishEvent(failure, category, url, null, url, registeredBase, null, null, null);
+        publishEvent(failure, category, url, null, url, registeredBase, null, null, null, null, null, null, null);
         return failure;
     }
 
@@ -159,14 +181,33 @@ public class FailureIngestionService {
         return new RoutingEnrichment(effectiveRegistered, discoveredUrl);
     }
 
-    private ApiFailure persistFromIngest(IngestFailureRequest request, ProxyRequest proxy) {
+    private ApiFailure persistFromIngest(IngestFailureRequest request, ProxyRequest proxy,
+                                         Map<String, Object> problemDetail) {
+        // Dual-accept: prefer RFC 9457 detail when present, fall back to legacy errorMessage.
+        String message = null;
+        if (problemDetail != null) {
+            Object detail = problemDetail.get("detail");
+            if (detail != null && !detail.toString().isBlank()) {
+                message = detail.toString();
+            }
+        }
+        if (message == null || message.isBlank()) {
+            message = request.getErrorMessage();
+        }
         if (request.getResponsePayload() != null && !request.getResponsePayload().isEmpty()) {
             return persistFailureWithResponse(
                     proxy, request.getErrorCode(), request.getErrorType(),
-                    request.getErrorMessage(), request.getResponsePayload());
+                    message, request.getResponsePayload());
         }
         return persistFailure(proxy, request.getErrorCode(), request.getErrorType(),
-                request.getErrorMessage(), null);
+                message, null);
+    }
+
+    /** Normalize via {@link ProblemDetail} so extensions round-trip consistently on Kafka. */
+    static Map<String, Object> normalizeProblemDetail(Map<String, Object> raw) {
+        if (raw == null || raw.isEmpty()) return raw;
+        ProblemDetail pd = ProblemDetail.fromMap(raw);
+        return pd == null ? raw : pd.toMap();
     }
 
     private ApiFailure persistFailure(ProxyRequest req, int code, String type,
@@ -199,7 +240,9 @@ public class FailureIngestionService {
 
     private void publishEvent(ApiFailure failure, String category, String attemptedUrl, String origin,
                                 String targetServiceUrl, String registeredBaseUrl, String dnsProbeDiscoveryUrl,
-                                String corsBlockedAt, String upstreamOriginSent) {
+                                String corsBlockedAt, String upstreamOriginSent,
+                                String correlationId, String requestId,
+                                Map<String, Object> problemDetail, Map<String, Object> responseHeaders) {
         kafkaTemplate.send(FAILURES_TOPIC, failure.getId().toString(), ApiFailureEvent.builder()
                 .failureId(failure.getId()).serviceA(failure.getServiceA()).serviceB(failure.getServiceB())
                 .endpoint(failure.getEndpoint()).httpMethod(failure.getHttpMethod())
@@ -211,6 +254,10 @@ public class FailureIngestionService {
                 .dnsProbeDiscoveryUrl(dnsProbeDiscoveryUrl)
                 .corsBlockedAt(corsBlockedAt)
                 .upstreamOriginSent(upstreamOriginSent)
+                .correlationId(correlationId)
+                .requestId(requestId)
+                .problemDetail(problemDetail)
+                .responseHeaders(responseHeaders)
                 .build());
         log.info("Published [{}] failure event {}", category, failure.getId());
     }

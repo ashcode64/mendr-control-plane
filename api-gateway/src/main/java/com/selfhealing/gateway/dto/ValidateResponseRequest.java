@@ -24,4 +24,10 @@ public class ValidateResponseRequest {
     private Map<String, Object> rawResponse;
     private Map<String, Object> transformedResponse;
     private Map<String, String> requestHeaders;
+
+    /** Phase 7 — RFC 9457 + correlation telemetry from the edge. */
+    private Map<String, Object> problemDetail;
+    private String correlationId;
+    private String requestId;
+    private Map<String, Object> responseHeaders;
 }

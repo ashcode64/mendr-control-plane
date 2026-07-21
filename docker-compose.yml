@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:15-alpine
+    # pgvector image required for Phase 6 hybrid GraphRAG (error_precedents.embedding).
+    # Existing volumes must be recreated (or manually CREATE EXTENSION vector + apply init_v5).
+    image: pgvector/pgvector:pg15
     environment:
       POSTGRES_DB: selfhealing
       POSTGRES_USER: ${POSTGRES_SUPERUSER:-admin}
@@ -14,6 +16,10 @@ services:
       # Runs after init.sql ("init_v2_*" sorts after "init.sql"): multi-tenancy + RLS + app_user
       - ./infra/init_v2_multitenancy.sql:/docker-entrypoint-initdb.d/init_v2_multitenancy.sql
       - ./infra/init_v3_analysis_conversations.sql:/docker-entrypoint-initdb.d/init_v3_analysis_conversations.sql
+      - ./infra/init_error_signature.sql:/docker-entrypoint-initdb.d/init_v4_error_signature.sql
+      - ./infra/init_v4_openapi.sql:/docker-entrypoint-initdb.d/init_v4b_openapi.sql
+      - ./infra/init_v5_error_precedents.sql:/docker-entrypoint-initdb.d/init_v5_error_precedents.sql
+      - ./infra/init_v6_phase8_moat.sql:/docker-entrypoint-initdb.d/init_v6_phase8_moat.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s
@@ -112,6 +118,10 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      # When set, automated failures route through conversation-engine /diagnose.
+      MENDR_CONVERSATION_DIAGNOSE_URL: ${MENDR_CONVERSATION_DIAGNOSE_URL:-http://conversation-engine:8085}
+      # Optional; leave empty to use local hash (matches rule-engine precedent commits).
+      MENDR_CONVERSATION_EMBED_URL: ${MENDR_CONVERSATION_EMBED_URL:-}
       # Auth: WorkOS JWT for the dashboard (/api/analysis), shared internal key for /mcp.
       # enforce=false keeps endpoints open while still binding tenant context.
       MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}

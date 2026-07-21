@@ -1,6 +1,7 @@
 package com.selfhealing.rules.kafka;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.selfhealing.rules.service.PrecedentCommitService;
 import com.selfhealing.rules.service.RouteSyncNotifier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -26,12 +27,14 @@ class ApprovalEventConsumerOriginOverrideTest {
     @Mock private JdbcTemplate jdbcTemplate;
     @Mock private RedisTemplate<String, Object> redisTemplate;
     @Mock private RouteSyncNotifier routeSyncNotifier;
+    @Mock private PrecedentCommitService precedentCommitService;
 
     private ApprovalEventConsumer consumer;
 
     @BeforeEach
     void setUp() {
-        consumer = new ApprovalEventConsumer(jdbcTemplate, redisTemplate, new ObjectMapper(), routeSyncNotifier);
+        consumer = new ApprovalEventConsumer(
+                jdbcTemplate, redisTemplate, new ObjectMapper(), routeSyncNotifier, precedentCommitService);
     }
 
     @Test

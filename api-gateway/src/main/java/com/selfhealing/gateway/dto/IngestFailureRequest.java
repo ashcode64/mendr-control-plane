@@ -36,4 +36,17 @@ public class IngestFailureRequest {
     private String corsBlockedAt;
     /** Origin header Mendr forwarded to the upstream service. */
     private String upstreamOriginSent;
+
+    /** Correlation / request ids from the calling client (Phase 7 telemetry). */
+    private String correlationId;
+    private String requestId;
+
+    /** Optional upstream response headers captured at the edge. */
+    private Map<String, Object> responseHeaders;
+
+    /**
+     * Optional RFC 9457 Problem Details envelope (dual-accepted with legacy fields).
+     * Prefer {@code detail} / extensions when present; fall back to {@code errorMessage}.
+     */
+    private Map<String, Object> problemDetail;
 }
