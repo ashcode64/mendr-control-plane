@@ -60,7 +60,7 @@ public class SpecTrustCalibrator {
                 SELECT request_payload, response_payload
                 FROM api_failures
                 WHERE service_b = ? AND endpoint = ?
-                ORDER BY created_at DESC
+                ORDER BY detected_at DESC
                 LIMIT ?
                 """, service, endpoint, sampleLimit);
             if (samples.isEmpty()) return;

@@ -36,6 +36,7 @@ mendr:
     # When set, AiAnalysisService routes automated failures through conversation-engine
     # POST /diagnose (LangGraph verify/simulate). Empty = legacy in-process LLM path.
     diagnose-url: ${MENDR_CONVERSATION_DIAGNOSE_URL:}
+    gepa-compile-url: ${MENDR_CONVERSATION_GEPA_COMPILE_URL:}
   conformal:
     risk-budget: ${MENDR_CONFORMAL_RISK_BUDGET:0.01}
     auto-apply-enabled: ${MENDR_CONFORMAL_AUTO_APPLY:false}
@@ -59,6 +60,7 @@ mendr:
     enabled: ${MENDR_BANDIT_ENABLED:true}
     only-ambiguous: ${MENDR_BANDIT_ONLY_AMBIGUOUS:true}
     candidates: ${MENDR_BANDIT_CANDIDATES:3}
+    local-ttl-ms: ${MENDR_BANDIT_LOCAL_TTL_MS:3600000}
   quality:
     # Race guard only (not a quality gate). Wilson decides promote/demote.
     min-age-minutes: ${MENDR_QUALITY_MIN_AGE_MINUTES:1}
@@ -72,6 +74,20 @@ mendr:
   dspy:
     enabled: ${MENDR_DSPY_ENABLED:false}
     pii-scrub-approved: ${MENDR_DSPY_PII_SCRUB_APPROVED:false}
+  gepa:
+    enabled: ${MENDR_GEPA_ENABLED:false}
+    compile-ms: ${MENDR_GEPA_COMPILE_MS:7200000}
+    compile-limit: ${MENDR_GEPA_COMPILE_LIMIT:60}
+    min-completed-payloads: ${MENDR_GEPA_MIN_COMPLETED:5}
+  cross-tenant:
+    # Phase 7: anonymized global pool. Default OFF — contractual opt-in + privacy review required.
+    enabled: ${MENDR_CROSS_TENANT_ENABLED:false}
+    require-privacy-review: ${MENDR_CROSS_TENANT_REQUIRE_PRIVACY_REVIEW:true}
+    publish-ms: ${MENDR_CROSS_TENANT_PUBLISH_MS:900000}
+    import-ms: ${MENDR_CROSS_TENANT_IMPORT_MS:900000}
+    publish-limit: ${MENDR_CROSS_TENANT_PUBLISH_LIMIT:40}
+    import-limit: ${MENDR_CROSS_TENANT_IMPORT_LIMIT:20}
+    max-fetch: ${MENDR_CROSS_TENANT_MAX_FETCH:8}
   ebpf:
     enabled: ${MENDR_EBPF_ENABLED:false}
   llm:
@@ -87,6 +103,38 @@ mendr:
     # Optional conversation-engine embed endpoint (Gemini when key set; else CE hash).
     # Empty = local Java hash (matches rule-engine commits).
     embed-url: ${MENDR_CONVERSATION_EMBED_URL:}
+  pii:
+    scrub-ms: ${MENDR_PII_SCRUB_MS:300000}
+    batch-size: ${MENDR_PII_BATCH_SIZE:40}
+    pending-ttl-ms: ${MENDR_PII_PENDING_TTL_MS:900000}
+  regression:
+    sweep-ms: ${MENDR_REGRESSION_SWEEP_MS:3600000}
+    max-db-cases: ${MENDR_REGRESSION_MAX_DB_CASES:40}
+    fail-closed: ${MENDR_REGRESSION_FAIL_CLOSED:true}
+  ace:
+    distill-ms: ${MENDR_ACE_DISTILL_MS:600000}
+    max-bullets: ${MENDR_ACE_MAX_BULLETS:24}
+    distill-limit: ${MENDR_ACE_DISTILL_LIMIT:40}
+  heuristics:
+    reflect-ms: ${MENDR_HEURISTICS_REFLECT_MS:600000}
+    reflect-limit: ${MENDR_HEURISTICS_REFLECT_LIMIT:40}
+    max-fetch: ${MENDR_HEURISTICS_MAX_FETCH:16}
+  skills:
+    distill-ms: ${MENDR_SKILLS_DISTILL_MS:600000}
+    min-support: ${MENDR_SKILLS_MIN_SUPPORT:2}
+    distill-limit: ${MENDR_SKILLS_DISTILL_LIMIT:80}
+    max-fetch: ${MENDR_SKILLS_MAX_FETCH:8}
+  metamemory:
+    distill-ms: ${MENDR_METAMEMORY_DISTILL_MS:900000}
+    min-cluster: ${MENDR_METAMEMORY_MIN_CLUSTER:3}
+    keep-alive: ${MENDR_METAMEMORY_KEEP_ALIVE:2}
+    distill-limit: ${MENDR_METAMEMORY_DISTILL_LIMIT:120}
+    max-fetch: ${MENDR_METAMEMORY_MAX_FETCH:12}
+  evolvemem:
+    tune-ms: ${MENDR_EVOLVEMEM_TUNE_MS:3600000}
+    health-ms: ${MENDR_EVOLVEMEM_HEALTH_MS:7200000}
+    cache-ms: ${MENDR_EVOLVEMEM_CACHE_MS:60000}
+    tune-enabled: ${MENDR_EVOLVEMEM_TUNE_ENABLED:true}
   analysis:
     security:
       # When true, /mcp and /api/analysis require a valid credential (WorkOS JWT for the

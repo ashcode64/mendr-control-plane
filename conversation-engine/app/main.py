@@ -144,6 +144,25 @@ async def internal_embed(
     }
 
 
+class GepaCompileRequest(BaseModel):
+    examples: list[dict]
+
+
+@app.post("/internal/gepa/compile")
+async def internal_gepa_compile(
+    req: GepaCompileRequest,
+    principal: Principal = Depends(authenticate),
+):
+    """Offline GEPA/MIPRO compile over scrubbed examples only (no raw api_failures)."""
+    from .gepa_compile import compile_prompt
+
+    if not req.examples:
+        raise HTTPException(status_code=400, detail="examples required")
+    result = compile_prompt(req.examples)
+    result["tenantId"] = principal.tenant_id
+    return result
+
+
 @app.post("/diagnose")
 async def diagnose(
     req: DiagnoseRequest,

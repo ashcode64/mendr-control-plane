@@ -81,6 +81,9 @@ public class PrecedentCommitService {
             if (specTrust == null) specTrust = 0.5;
 
             Object tenantId = row.get("tenant_id");
+            String changeType = str(sig.get("change_type"));
+            if (changeType == null) changeType = str(rules.get("type"));
+            String banditCategory = mapChangeTypeToCategory(changeType);
 
             jdbcTemplate.update("""
                 INSERT INTO error_precedents (
@@ -89,6 +92,7 @@ public class PrecedentCommitService {
                     embedding, signature_text, program,
                     outcome, quality, spec_trust,
                     source_service, target_service, endpoint,
+                    bandit_category,
                     approved_at
                 ) VALUES (
                     ?, ?, ?,
@@ -96,24 +100,40 @@ public class PrecedentCommitService {
                     ?::vector, ?, ?::jsonb,
                     'PENDING', 'CANDIDATE', ?,
                     ?, ?, ?,
+                    ?,
                     NOW()
                 )
                 """,
                     tenantId, analysisId, failureId,
                     str(sig.get("category")),
-                    str(sig.get("change_type")),
+                    changeType,
                     str(sig.get("json_path")),
                     str(sig.get("template_id")),
                     str(sig.get("contract_ref")),
                     vectorLit, signatureText, programJson,
                     specTrust,
-                    row.get("service_a"), row.get("service_b"), row.get("endpoint"));
+                    row.get("service_a"), row.get("service_b"), row.get("endpoint"),
+                    banditCategory);
 
-            log.info("Committed CANDIDATE error_precedent for analysis {}", analysisId);
+            log.info("Committed CANDIDATE error_precedent for analysis {} (bandit_category={})",
+                    analysisId, banditCategory);
         } catch (Exception e) {
             // Never fail deploy because memory write failed
             log.warn("error_precedents commit skipped for analysis {}: {}", analysisIdStr, e.getMessage());
         }
+    }
+
+    /** Mirrors BanditService.mapChangeTypeToCategory (rule-engine has no dependency on ai-analysis). */
+    static String mapChangeTypeToCategory(String changeType) {
+        if (changeType == null) return "STRUCTURAL_MAPPING";
+        String u = changeType.toUpperCase();
+        if (u.contains("COERCE") || u.contains("TYPE")) return "DATA_COERCION";
+        if (u.contains("DEFAULT") || u.contains("ADD")) return "ADD_DEFAULT";
+        if (u.contains("REMOVE")) return "FIELD_REMOVE";
+        if (u.contains("RESPONSE")) return "RESPONSE_MAP";
+        if (u.contains("ROUTING")) return "ROUTING";
+        if (u.contains("CORS")) return "CORS";
+        return "STRUCTURAL_MAPPING";
     }
 
     @SuppressWarnings("unchecked")

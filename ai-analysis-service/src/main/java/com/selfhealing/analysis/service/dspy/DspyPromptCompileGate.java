@@ -5,8 +5,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * Phase 8.9 — DSPy / MIPROv2 prompt compilation is deferred behind a hard PII gate.
- * This component documents the gate and refuses to run until scrub design lands.
+ * Phase 8.9 / Phase 6 — DSPy flag gate (PII scrub approval).
+ * Prefer {@link com.selfhealing.analysis.service.gepa.GepaCompileGate} for compile eligibility
+ * (also requires scrub-proven COMPLETED offline payloads).
  */
 @Slf4j
 @Component

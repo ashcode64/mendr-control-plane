@@ -88,7 +88,7 @@ public class PrecedentsQualitySweeper {
                     """
                     SELECT COUNT(*)::int
                     FROM api_failures af
-                    WHERE af.created_at >= ?
+                    WHERE af.detected_at >= ?
                       AND (? IS NULL OR af.service_a = ?)
                       AND af.service_b = ?
                       AND af.endpoint = ?

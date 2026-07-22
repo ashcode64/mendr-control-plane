@@ -20,6 +20,13 @@ services:
       - ./infra/init_v4_openapi.sql:/docker-entrypoint-initdb.d/init_v4b_openapi.sql
       - ./infra/init_v5_error_precedents.sql:/docker-entrypoint-initdb.d/init_v5_error_precedents.sql
       - ./infra/init_v6_phase8_moat.sql:/docker-entrypoint-initdb.d/init_v6_phase8_moat.sql
+      - ./infra/init_v7_self_learning.sql:/docker-entrypoint-initdb.d/init_v7_self_learning.sql
+      - ./infra/init_v8_phase1_regression_ace.sql:/docker-entrypoint-initdb.d/init_v8_phase1_regression_ace.sql
+      - ./infra/init_v9_phase2_repair_heuristics.sql:/docker-entrypoint-initdb.d/init_v9_phase2_repair_heuristics.sql
+      - ./infra/init_v10_phase3_lilo_metamemory.sql:/docker-entrypoint-initdb.d/init_v10_phase3_lilo_metamemory.sql
+      - ./infra/init_v11_phase5_evolvemem.sql:/docker-entrypoint-initdb.d/init_v11_phase5_evolvemem.sql
+      - ./infra/init_v12_phase6_gepa.sql:/docker-entrypoint-initdb.d/init_v12_phase6_gepa.sql
+      - ./infra/init_v13_phase7_cross_tenant.sql:/docker-entrypoint-initdb.d/init_v13_phase7_cross_tenant.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s

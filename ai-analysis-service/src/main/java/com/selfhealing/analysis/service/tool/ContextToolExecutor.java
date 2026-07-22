@@ -36,6 +36,12 @@ public class ContextToolExecutor {
     private final com.selfhealing.analysis.service.embed.PrecedentsEmbedClient precedentsEmbedClient;
     private final com.selfhealing.analysis.service.ddmin.DdminOracleService ddminOracleService;
     private final com.selfhealing.analysis.service.bandit.BanditService banditService;
+    private final com.selfhealing.analysis.service.ace.AcePlaybookService acePlaybookService;
+    private final com.selfhealing.analysis.service.heuristics.RepairHeuristicsService repairHeuristicsService;
+    private final com.selfhealing.analysis.service.skills.SkillLibraryService skillLibraryService;
+    private final com.selfhealing.analysis.service.metamemory.MetaMemoryService metaMemoryService;
+    private final com.selfhealing.analysis.service.evolvemem.EvolveMemService evolveMemService;
+    private final com.selfhealing.analysis.service.gepa.GepaCompileService gepaCompileService;
 
     @Value("${mendr.precedents.lag-window-minutes:15}")
     private int lagWindowMinutes;
@@ -142,12 +148,75 @@ public class ContextToolExecutor {
                             "baseUrl", Map.of("type", "string", "description", "Optional upstream base URL for Path B")),
                     List.of("category")),
             toolDef("select_bandit_arms",
-                    "Hierarchical REx: Thompson-sample ≤3 strategy categories for ambiguous cases only. "
-                            + "Returns local arms seeded from global Beta priors. Deterministic Synthesis should skip this.",
+                    "True REx: Thompson-sample ≤3 strategy categories for ambiguous cases only. "
+                            + "Opens an in-memory local session (literal program arms registered later). "
+                            + "Global credit stays async via bandit_pending_credit. Deterministic Synthesis should skip this.",
                     Map.of(
                             "ambiguous", Map.of("type", "boolean", "description", "True when agent-loop / UNKNOWN / multi-hop"),
                             "preferredCategories", Map.of("type", "array", "items", Map.of("type", "string"),
-                                    "description", "Optional preferred strategy categories")),
+                                    "description", "Optional preferred strategy categories"),
+                            "sessionId", Map.of("type", "string", "description", "Optional incident session id")),
+                    List.of()),
+            toolDef("get_ace_playbook",
+                    "Fetch ACE evolving playbook bullets (SUCCESS strategies + FAILURE warn-offs) for few-shot guidance.",
+                    Map.of(
+                            "category", Map.of("type", "string", "description", "Optional failure category filter"),
+                            "changeType", Map.of("type", "string", "description", "Optional change_type filter")),
+                    List.of()),
+            toolDef("get_repair_heuristics",
+                    "Fetch topology-scoped repair heuristics (ExpeL) for the failing route. "
+                            + "Requires source/target/endpoint to build topology_scope; returns SUCCESS tips + FAILURE warn-offs.",
+                    Map.of(
+                            "sourceService", strProp(),
+                            "targetService", strProp(),
+                            "endpoint", strProp(),
+                            "category", Map.of("type", "string", "description", "Optional category filter"),
+                            "changeType", Map.of("type", "string", "description", "Optional change_type filter")),
+                    List.of()),
+            toolDef("match_skill",
+                    "LILO skill fast-path: match a RegressionHarness-gated structural macro to the current sketch "
+                            + "(change_type + allowed opcodes). Returns an instantiable MendrScript program when matched.",
+                    Map.of(
+                            "changeType", Map.of("type", "string", "description", "ErrorSignature change_type"),
+                            "category", Map.of("type", "string", "description", "Optional failure category"),
+                            "allowedOpcodes", Map.of("type", "array", "items", Map.of("type", "string"),
+                                    "description", "Opcodes implied by the sketch hole"),
+                            "jsonPath", Map.of("type", "string", "description", "Target JSON path to instantiate onto")),
+                    List.of()),
+            toolDef("get_meta_memory",
+                    "Fetch MetaMemory abstract rules distilled from TRUSTED precedent clusters (Semantic Memory).",
+                    Map.of(
+                            "category", Map.of("type", "string", "description", "Optional failure category filter"),
+                            "changeType", Map.of("type", "string", "description", "Optional change_type filter")),
+                    List.of()),
+            toolDef("register_local_program",
+                    "True REx: register a literal MendrScript program as a local arm in the incident session. "
+                            + "bandit_category is coerced to the Thompson-sampled set or the branch is aborted.",
+                    Map.of(
+                            "sessionId", strProp(),
+                            "banditCategory", Map.of("type", "string", "description", "Category tag for this program"),
+                            "program", objProp("MendrScript AST {schemaVersion, ops:[...]}")),
+                    List.of("sessionId", "program")),
+            toolDef("observe_local_bandit",
+                    "True REx: update local Beta for a program arm after critics (verify/simulate). Never updates global bandit_state.",
+                    Map.of(
+                            "sessionId", strProp(),
+                            "localArmId", strProp(),
+                            "success", Map.of("type", "boolean", "description", "True when critics passed")),
+                    List.of("sessionId", "localArmId", "success")),
+            toolDef("pick_local_bandit",
+                    "True REx: Thompson-sample among registered local program arms; returns the winning program + category.",
+                    Map.of("sessionId", strProp()),
+                    List.of("sessionId")),
+            toolDef("get_retrieval_config",
+                    "EvolveMem: fetch the ACTIVE versioned retrieval config (topK, minScore, maxDistance, decay).",
+                    Map.of(),
+                    List.of()),
+            toolDef("get_compiled_prompt",
+                    "GEPA/MIPRO: fetch ACTIVE compiled propose addendum (scrubbed corpus only; never raw api_failures).",
+                    Map.of(
+                            "promptKind", Map.of("type", "string",
+                                    "description", "propose_addendum (default) or propose_system")),
                     List.of()));
 
     /** Dispatch a context-tool call; returns a JSON-serializable result map. */
@@ -172,6 +241,15 @@ public class ContextToolExecutor {
                         "inputs", input == null ? List.of() : input.getOrDefault("inputs", List.of())));
                 case "localize_fields" -> localizeFields(input);
                 case "select_bandit_arms" -> selectBanditArms(input);
+                case "register_local_program" -> registerLocalProgram(input);
+                case "observe_local_bandit" -> observeLocalBandit(input);
+                case "pick_local_bandit" -> pickLocalBandit(input);
+                case "get_retrieval_config" -> getRetrievalConfig(input);
+                case "get_compiled_prompt" -> getCompiledPrompt(input);
+                case "get_ace_playbook" -> getAcePlaybook(input);
+                case "get_repair_heuristics" -> getRepairHeuristics(input);
+                case "match_skill" -> matchSkill(input);
+                case "get_meta_memory" -> getMetaMemory(input);
                 default -> Map.of("error", "unknown tool: " + toolName);
             };
         } catch (Exception e) {
@@ -350,6 +428,18 @@ public class ContextToolExecutor {
                 precedents = rankSqlWithSpecTrust(precedents);
             }
 
+            java.util.UUID tenantId = null;
+            try {
+                tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+            } catch (Exception ignored) {
+            }
+            var retrievalCfg = evolveMemService.activeConfig(tenantId);
+            if ("hybrid-graphrag".equals(retrieval)) {
+                precedents = evolveMemService.applyRetrievalPolicy(precedents, retrievalCfg);
+            } else if (precedents.size() > retrievalCfg.topK()) {
+                precedents = new ArrayList<>(precedents.subList(0, retrievalCfg.topK()));
+            }
+
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("precedents", precedents);
             out.put("graphNeighbors", neighbors);
@@ -360,6 +450,7 @@ public class ContextToolExecutor {
             out.put("lagReason", lag.reason());
             out.put("lagEvidence", lag.evidence());
             out.put("retrieval", retrieval);
+            out.put("retrievalConfig", retrievalCfg.toMap());
             return out;
         } catch (Exception e) {
             log.debug("get_precedents failed: {}", e.getMessage());
@@ -402,14 +493,23 @@ public class ContextToolExecutor {
             String tenantClause = crossTenantChampions
                     ? ""
                     : "AND tenant_id IS NOT NULL";
+            java.util.UUID tenantId = null;
+            try {
+                tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+            } catch (Exception ignored) {
+            }
+            var cfg = evolveMemService.activeConfig(tenantId);
+            // Fetch a wider pool so decay / min_score can still fill topK
+            int fetchLimit = Math.min(64, Math.max(cfg.topK() * 3, vectorTopK));
             List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
                 SELECT id, analysis_id, failure_id, category, change_type, json_path, template_id,
                        contract_ref, program, outcome, quality, spec_trust,
-                       source_service, target_service, endpoint, approved_at, verified_at,
+                       source_service, target_service, endpoint, approved_at, verified_at, created_at,
                        (embedding <=> ?::vector) AS distance
                 FROM error_precedents
                 WHERE %s
                 %s
+                AND archived_at IS NULL
                 ORDER BY
                   CASE quality WHEN 'TRUSTED' THEN 0 WHEN 'CANDIDATE' THEN 1 ELSE 2 END,
                   CASE outcome WHEN 'FAILURE' THEN 1 ELSE 0 END,
@@ -417,7 +517,7 @@ public class ContextToolExecutor {
                     / GREATEST(0.25, COALESCE(spec_trust, 0.5))
                 LIMIT ?
                 """.formatted(qualityFilter, tenantClause),
-                    vectorLit, vectorLit, vectorTopK);
+                    vectorLit, vectorLit, fetchLimit);
 
             List<Map<String, Object>> scored = new ArrayList<>();
             for (Map<String, Object> row : rows) {
@@ -619,14 +719,151 @@ public class ContextToolExecutor {
                 if (o != null) preferred.add(o.toString());
             }
         }
-        List<Map<String, Object>> arms = banditService.selectLocalArms(null, preferred);
-        Map<String, Object> out = new LinkedHashMap<>();
-        out.put("engaged", true);
-        out.put("arms", arms);
-        if (!arms.isEmpty()) {
-            out.put("category", arms.get(0).get("category"));
-            out.put("selected", arms.get(0));
+        String sessionHint = s(input, "sessionId");
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
         }
+        return banditService.openSession(tenantId, preferred, sessionHint);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object registerLocalProgram(Map<String, Object> input) {
+        String sessionId = s(input, "sessionId");
+        String category = s(input, "banditCategory");
+        if (category == null) category = s(input, "category");
+        Object programRaw = input == null ? null : input.get("program");
+        Map<String, Object> program = Map.of();
+        if (programRaw instanceof Map<?, ?> m) {
+            program = new LinkedHashMap<>((Map<String, Object>) m);
+        }
+        return banditService.registerLocalProgram(sessionId, category, program);
+    }
+
+    private Object observeLocalBandit(Map<String, Object> input) {
+        String sessionId = s(input, "sessionId");
+        String localArmId = s(input, "localArmId");
+        boolean success = input != null && Boolean.TRUE.equals(input.get("success"));
+        return banditService.observeLocal(sessionId, localArmId, success);
+    }
+
+    private Object pickLocalBandit(Map<String, Object> input) {
+        return banditService.pickLocal(s(input, "sessionId"));
+    }
+
+    private Object getRetrievalConfig(Map<String, Object> input) {
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
+        }
+        var cfg = evolveMemService.activeConfig(tenantId);
+        Map<String, Object> out = new LinkedHashMap<>(cfg.toMap());
+        out.put("active", true);
+        return out;
+    }
+
+    private Object getCompiledPrompt(Map<String, Object> input) {
+        String kind = s(input, "promptKind");
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
+        }
+        return gepaCompileService.fetchActive(tenantId, kind);
+    }
+
+    private Object getAcePlaybook(Map<String, Object> input) {
+        String category = s(input, "category");
+        String changeType = s(input, "changeType");
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
+        }
+        List<Map<String, Object>> bullets = acePlaybookService.fetchActive(tenantId, category, changeType);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("bullets", bullets);
+        out.put("count", bullets.size());
+        List<Map<String, Object>> success = bullets.stream()
+                .filter(b -> "SUCCESS".equals(String.valueOf(b.get("outcome"))))
+                .toList();
+        List<Map<String, Object>> failure = bullets.stream()
+                .filter(b -> "FAILURE".equals(String.valueOf(b.get("outcome")))
+                        || "WARN".equals(String.valueOf(b.get("outcome"))))
+                .toList();
+        out.put("successBullets", success);
+        out.put("failureWarnOffs", failure);
+        return out;
+    }
+
+    private Object getRepairHeuristics(Map<String, Object> input) {
+        String source = s(input, "sourceService");
+        String target = s(input, "targetService");
+        String endpoint = s(input, "endpoint");
+        String category = s(input, "category");
+        String changeType = s(input, "changeType");
+        String scope = com.selfhealing.analysis.service.heuristics.TopologyScope.of(source, target, endpoint);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("topologyScope", scope);
+        if (scope == null) {
+            out.put("heuristics", List.of());
+            out.put("error", "topology_scope required (need source/target/endpoint)");
+            return out;
+        }
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
+        }
+        List<Map<String, Object>> heuristics = repairHeuristicsService.fetchForTopology(
+                tenantId, scope, category, changeType);
+        out.put("heuristics", heuristics);
+        out.put("count", heuristics.size());
+        out.put("successHeuristics", heuristics.stream()
+                .filter(h -> "SUCCESS".equals(String.valueOf(h.get("outcome"))))
+                .toList());
+        out.put("failureWarnOffs", heuristics.stream()
+                .filter(h -> {
+                    String o = String.valueOf(h.get("outcome"));
+                    return "FAILURE".equals(o) || "WARN".equals(o);
+                })
+                .toList());
+        return out;
+    }
+
+
+    private Object matchSkill(Map<String, Object> input) {
+        String changeType = s(input, "changeType");
+        String category = s(input, "category");
+        String jsonPath = s(input, "jsonPath");
+        List<String> allowed = new ArrayList<>();
+        if (input != null && input.get("allowedOpcodes") instanceof List<?> list) {
+            for (Object o : list) {
+                if (o != null) allowed.add(o.toString());
+            }
+        }
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
+        }
+        return skillLibraryService.match(tenantId, changeType, category, allowed, jsonPath);
+    }
+
+    private Object getMetaMemory(Map<String, Object> input) {
+        String category = s(input, "category");
+        String changeType = s(input, "changeType");
+        java.util.UUID tenantId = null;
+        try {
+            tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+        } catch (Exception ignored) {
+        }
+        List<Map<String, Object>> rules = metaMemoryService.fetchActive(tenantId, category, changeType);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("rules", rules);
+        out.put("count", rules.size());
         return out;
     }
 
@@ -665,11 +902,11 @@ public class ContextToolExecutor {
 
             String sql = """
                 SELECT id, service_a, service_b, endpoint, error_type, error_message,
-                       template_id, created_at
+                       template_id, detected_at
                 FROM api_failures
                 WHERE (service_a IN (%s) OR service_b IN (%s))
-                  AND created_at >= NOW() - make_interval(mins => ?)
-                ORDER BY created_at DESC
+                  AND detected_at >= NOW() - make_interval(mins => ?)
+                ORDER BY detected_at DESC
                 LIMIT 12
                 """.formatted(placeholders, placeholders);
 
@@ -679,11 +916,11 @@ public class ContextToolExecutor {
             } catch (Exception missingCol) {
                 // template_id column may be absent on older schemas
                 sql = """
-                    SELECT id, service_a, service_b, endpoint, error_type, error_message, created_at
+                    SELECT id, service_a, service_b, endpoint, error_type, error_message, detected_at
                     FROM api_failures
                     WHERE (service_a IN (%s) OR service_b IN (%s))
-                      AND created_at >= NOW() - make_interval(mins => ?)
-                    ORDER BY created_at DESC
+                      AND detected_at >= NOW() - make_interval(mins => ?)
+                    ORDER BY detected_at DESC
                     LIMIT 12
                     """.formatted(placeholders, placeholders);
                 hits = jdbcTemplate.queryForList(sql, params.toArray());

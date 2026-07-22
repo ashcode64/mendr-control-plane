@@ -46,7 +46,11 @@ public class SecurityConfig {
                     if (properties.isEnforce()) {
                         // /mcp and /api/internal/analysis are machine-only; /api/analysis is
                         // dashboard (JWT) + internal.
-                        registry.requestMatchers("/mcp/**", "/api/analysis/**", "/api/internal/analysis/**")
+                        registry.requestMatchers(
+                                        "/mcp/**",
+                                        "/api/analysis/**",
+                                        "/api/internal/analysis/**",
+                                        "/internal/cross-tenant/**")
                                 .authenticated();
                         registry.anyRequest().permitAll();
                     } else {

@@ -10,10 +10,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .bandit_category import enforce_on_program
 from .config import settings
 from .graph import build_graph
 from .llm import Proposer
 from .mcp_client import McpClient
+from .prompts import SCHEMA_VERSION
+from .schema_check import validates_against_schema
 
 logger = logging.getLogger("mendr.diagnose")
 
@@ -36,18 +39,30 @@ def _should_diagnose_first(complexity: dict | None, signature: dict) -> bool:
     return False
 
 
-def _has_structured_problem(sig: dict, complexity: dict | None) -> bool:
-    """Path A1: Problem Details (or signature slots) already disambiguated the error."""
+def _has_rfc9457_problem(sig: dict, complexity: dict | None) -> bool:
+    """True only when RFC 9457 Problem Details already carry structured root-cause slots.
+
+    Used to skip CIL when Path A1 has already disambiguated the failure.
+    Must NOT treat bare ErrorSignature json_path+change_type as sufficient — that
+    reintroduces top-1 starvation when driftedFields has N>1.
+    """
     complexity = complexity or {}
-    if complexity.get("hasProblemJson") or sig.get("problemDetail"):
-        pd = sig.get("problemDetail") if isinstance(sig.get("problemDetail"), dict) else {}
-        ext = pd.get("extensions") if isinstance(pd.get("extensions"), dict) else {}
-        if ext.get("json_path") or ext.get("template_id") or ext.get("errors"):
+    if not (complexity.get("hasProblemJson") or sig.get("problemDetail")):
+        return False
+    pd = sig.get("problemDetail") if isinstance(sig.get("problemDetail"), dict) else {}
+    ext = pd.get("extensions") if isinstance(pd.get("extensions"), dict) else {}
+    if ext.get("json_path") or ext.get("template_id") or ext.get("errors"):
+        return True
+    if pd.get("type") and "problem" in str(pd.get("type", "")).lower():
+        if sig.get("json_path") or sig.get("template_id"):
             return True
-        if pd.get("type") and "problem" in str(pd.get("type", "")).lower():
-            # Explicit problem+json type URI without free-text-only body
-            if sig.get("json_path") or sig.get("template_id"):
-                return True
+    return False
+
+
+def _has_structured_problem(sig: dict, complexity: dict | None) -> bool:
+    """Skip Drain3 mining when Problem Details or signature slots already disambiguated."""
+    if _has_rfc9457_problem(sig, complexity):
+        return True
     if sig.get("json_path") and sig.get("change_type"):
         return True
     return False
@@ -130,6 +145,57 @@ async def run_diagnose(
             diagnosis["lagReason"] = (prec or {}).get("lagReason")
             diagnosis["lagEvidence"] = (prec or {}).get("lagEvidence") or []
             diagnosis["retrieval"] = (prec or {}).get("retrieval")
+            try:
+                playbook = await tmcp.call_tool("get_ace_playbook", {
+                    "category": sig.get("category") or (complexity or {}).get("category"),
+                    "changeType": sig.get("change_type"),
+                })
+                diagnosis["acePlaybook"] = (playbook or {}).get("bullets") or []
+                diagnosis["aceSuccessBullets"] = (playbook or {}).get("successBullets") or []
+                diagnosis["aceFailureWarnOffs"] = (playbook or {}).get("failureWarnOffs") or []
+            except Exception as pe:
+                logger.debug("ace playbook fetch skipped: %s", pe)
+            try:
+                coords = sig.get("contract_coords") or {}
+                rh = await tmcp.call_tool("get_repair_heuristics", {
+                    "sourceService": (
+                        sig.get("sourceService")
+                        or coords.get("sourceService")
+                        or coords.get("source")
+                    ),
+                    "targetService": coords.get("service") or coords.get("targetService"),
+                    "endpoint": coords.get("endpoint"),
+                    "category": sig.get("category") or (complexity or {}).get("category"),
+                    "changeType": sig.get("change_type"),
+                })
+                diagnosis["repairHeuristics"] = (rh or {}).get("heuristics") or []
+                diagnosis["repairSuccessHeuristics"] = (rh or {}).get("successHeuristics") or []
+                diagnosis["repairFailureWarnOffs"] = (rh or {}).get("failureWarnOffs") or []
+                diagnosis["topologyScope"] = (rh or {}).get("topologyScope")
+            except Exception as he:
+                logger.debug("repair heuristics fetch skipped: %s", he)
+            try:
+                mm = await tmcp.call_tool("get_meta_memory", {
+                    "category": sig.get("category") or (complexity or {}).get("category"),
+                    "changeType": sig.get("change_type"),
+                })
+                diagnosis["metaMemory"] = (mm or {}).get("rules") or []
+            except Exception as me:
+                logger.debug("meta memory fetch skipped: %s", me)
+            try {
+                cp = await tmcp.call_tool("get_compiled_prompt", {"promptKind": "propose_addendum"})
+                if cp and cp.get("found") and cp.get("promptText"):
+                    diagnosis["compiledPrompt"] = cp.get("promptText")
+                    diagnosis["compiledPromptMeta"] = {
+                        "version": cp.get("version"),
+                        "compiler": cp.get("compiler"),
+                        "datasetSize": cp.get("datasetSize"),
+                    }
+            except Exception as ce:
+                logger.debug("compiled prompt fetch skipped: %s", ce)
+            # Phase 7: do NOT inject raw cross-tenant pool into the LLM prompt.
+            # Imports materialize into local skill_library / repair_heuristics / ace_playbook
+            # only after critic + harness; diagnose already uses match_skill / heuristics / playbook.
             diagnosis["hypothesis"] = _build_hypothesis(sig, diagnosis)
         except Exception as e:
             logger.warning("diagnostic enrichment failed: %s", e)
@@ -161,11 +227,21 @@ async def run_diagnose(
             "allowedOpcodes": sketch["allowedOpcodes"],
         }]
 
-    # Phase 8.3a: multi-field ddmin when N>1 and no precise single pointer
+    # Phase 0b / 8.3a: Causal Intervention Localization
+    # Candidates from Java driftedFields only (never LLM-flagged).
+    # N=1 → PS probe; N>1 → ddmin Path A/B/C.
     ddmin_meta: dict | None = None
     refuse_ddmin = False
+    verified_candidates: list[dict] = []
     drifted = (complexity or {}).get("driftedFields") or sig.get("driftedFields") or []
-    if isinstance(drifted, list) and len(drifted) > 1 and not _has_structured_problem(sig, complexity):
+    if not isinstance(drifted, list):
+        drifted = []
+
+    if len(drifted) == 1 and not _has_rfc9457_problem(sig, complexity):
+        verified_candidates = await _ps_probe_single(
+            tmcp, drifted[0], cases, sig, complexity
+        )
+    elif len(drifted) > 1 and not _has_rfc9457_problem(sig, complexity):
         try:
             coords = sig.get("contract_coords") or {}
             payload = None
@@ -202,6 +278,28 @@ async def run_diagnose(
                         "token": token,
                         "allowedOpcodes": _allowed_opcodes(ct),
                     })
+                    verified_candidates.append({
+                        "field": jp,
+                        "candidate_op": f,
+                        "causally_verified": True,
+                        "source": "ddmin_minimal",
+                    })
+                # Annotate non-minimal drifted fields as ruled out (not sufficient alone)
+                minimal_paths = {
+                    (f.get("json_path") if isinstance(f, dict) else None)
+                    for f in (ddmin_meta.get("minimal") or [])
+                }
+                for f in drifted:
+                    if not isinstance(f, dict):
+                        continue
+                    jp = f.get("json_path") or f.get("path")
+                    if jp and jp not in minimal_paths:
+                        verified_candidates.append({
+                            "field": jp,
+                            "candidate_op": f.get("minimal_op") or f,
+                            "causally_verified": False,
+                            "source": "ddmin_ruled_out",
+                        })
                 if holes:
                     sketch["holes"] = holes
                     sketch["hole"] = holes[0].get("token")
@@ -218,6 +316,30 @@ async def run_diagnose(
 
     # 8.3b Deterministic fast-path: single implied opcode → materialize without LLM
     deterministic_program = _try_materialize(sketch)
+    skill_meta: dict | None = None
+
+    # Phase 3a LILO: sketch-matched skill macro (RegressionHarness-gated)
+    if deterministic_program is None:
+        try:
+            holes = sketch.get("holes") or []
+            hole0 = holes[0] if holes and isinstance(holes[0], dict) else {}
+            allowed = hole0.get("allowedOpcodes") or sketch.get("allowedOpcodes") or []
+            skill_meta = await tmcp.call_tool("match_skill", {
+                "changeType": sig.get("change_type") or hole0.get("change_type"),
+                "category": sig.get("category") or (complexity or {}).get("category"),
+                "allowedOpcodes": allowed,
+                "jsonPath": hole0.get("json_path") or sketch.get("json_path") or sig.get("json_path"),
+            })
+            if skill_meta and skill_meta.get("matched") and isinstance(skill_meta.get("program"), dict):
+                deterministic_program = skill_meta["program"]
+                logger.info(
+                    "LILO skill fast-path matched key=%s support=%s",
+                    skill_meta.get("skillKey"),
+                    skill_meta.get("supportCount"),
+                )
+        except Exception as se:
+            logger.debug("skill match skipped: %s", se)
+
     ambiguous = _should_diagnose_first(complexity, sig) and deterministic_program is None
 
     # 8.3c Hierarchical bandit — only ambiguous / agent-loop cases
@@ -237,13 +359,15 @@ async def run_diagnose(
         except Exception as e:
             logger.debug("bandit select skipped: %s", e)
 
-    user_message = _propose_prompt(sig, sketch, diagnosis, bandit_meta)
+    user_message = _propose_prompt(sig, sketch, diagnosis, bandit_meta, verified_candidates)
     context = {
         "errorSignature": sig,
         "sketch": sketch,
         "diagnosis": diagnosis,
         "templateMeta": template_meta,
         "bandit": bandit_meta,
+        "skill": skill_meta,
+        "verifiedCandidates": verified_candidates,
         "service": (sig.get("contract_coords") or {}).get("service"),
         "endpoint": (sig.get("contract_coords") or {}).get("endpoint"),
         "direction": (sig.get("contract_coords") or {}).get("direction", "REQUEST"),
@@ -261,6 +385,7 @@ async def run_diagnose(
             "metamorphic": None,
             "ddmin": ddmin_meta,
             "bandit": bandit_meta,
+            "verifiedCandidates": verified_candidates,
             "model": settings.active_llm_model,
             "errorSignature": sig,
             "sketch": sketch,
@@ -276,6 +401,11 @@ async def run_diagnose(
 
     # Deterministic Synthesis-only: skip LLM propose
     if deterministic_program is not None:
+        rationale = (
+            f"LILO skill fast-path ({skill_meta.get('skillKey')})"
+            if skill_meta and skill_meta.get("matched")
+            else "deterministic hole-fill (no LLM)"
+        )
         init = {
             "user_message": user_message,
             "context": context,
@@ -283,14 +413,26 @@ async def run_diagnose(
             "prior_turns": prior_turns or [],
             "tenant_id": tenant_id,
             "candidate": deterministic_program,
-            "rationale": "deterministic hole-fill (no LLM)",
+            "rationale": rationale,
             "iterations": 1,
             "bandit": bandit_meta,
             "ddmin": ddmin_meta,
         }
-        # Jump into verify by seeding candidate then running graph from verify via full stream
-        # with a pre-set candidate: load_context → propose would overwrite; instead verify directly.
-        last = await _run_critics_only(deterministic_program, context, cases, tenant_id, bandit_meta, ddmin_meta)
+        last = await _run_critics_only(
+            deterministic_program, context, cases, tenant_id, bandit_meta, ddmin_meta, rationale
+        )
+    elif bandit_meta and bandit_meta.get("engaged") and bandit_meta.get("arms"):
+        # Phase 4 True REx: semantic diversity batch → local Beta → Thompson pick
+        last = await _true_rex_diversity(
+            tmcp=tmcp,
+            user_message=user_message,
+            context=context,
+            cases=cases,
+            prior_turns=prior_turns or [],
+            tenant_id=tenant_id,
+            bandit_meta=bandit_meta,
+            ddmin_meta=ddmin_meta,
+        )
     else:
         init = {
             "user_message": user_message,
@@ -319,7 +461,9 @@ async def run_diagnose(
         "simulation": last.get("simulation"),
         "metamorphic": last.get("metamorphic"),
         "ddmin": ddmin_meta,
-        "bandit": bandit_meta or last.get("bandit"),
+        "bandit": last.get("bandit") or bandit_meta,
+        "skill": skill_meta,
+        "verifiedCandidates": verified_candidates,
         "model": settings.active_llm_model,
         "errorSignature": sig,
         "sketch": sketch,
@@ -334,6 +478,142 @@ async def run_diagnose(
     }
 
 
+async def _true_rex_diversity(
+    tmcp: McpClient,
+    user_message: str,
+    context: dict,
+    cases: list,
+    prior_turns: list,
+    tenant_id: str | None,
+    bandit_meta: dict,
+    ddmin_meta: dict | None,
+) -> dict:
+    """Semantic diversity batch: ≤3 category-tagged programs → local Beta → Thompson pick."""
+    arms = [a for a in (bandit_meta.get("arms") or []) if isinstance(a, dict)]
+    allowed = list(bandit_meta.get("allowedCategories") or [
+        a.get("category") for a in arms if a.get("category")
+    ])
+    session_id = bandit_meta.get("sessionId")
+    registered = 0
+
+    for arm in arms[:3]:
+        cat = arm.get("category")
+        if not cat:
+            continue
+        hint = (
+            f"{user_message}\n\n"
+            f"True REx diversity arm: set bandit_category to exactly {cat}. "
+            f"Do not invent other categories. Prefer strategies in {cat}."
+        )
+        try:
+            program, _text = await _proposer.propose(hint, context, [], prior_turns)
+        except Exception as e:
+            logger.debug("diversity propose failed for %s: %s", cat, e)
+            continue
+        program, coerced = enforce_on_program(program, allowed, assigned_category=cat)
+        if program is None:
+            logger.debug("diversity arm aborted (category) for %s", cat)
+            continue
+        if not session_id:
+            continue
+        try:
+            reg = await tmcp.call_tool("register_local_program", {
+                "sessionId": session_id,
+                "banditCategory": coerced,
+                "program": program,
+            })
+        except Exception as e:
+            logger.debug("register_local_program failed: %s", e)
+            continue
+        if not (reg or {}).get("registered"):
+            continue
+        local_arm_id = ((reg or {}).get("arm") or {}).get("localArmId")
+        registered += 1
+        # Critics update local posterior only
+        verification = await tmcp.verify_program(program)
+        success = bool((verification or {}).get("valid"))
+        if success and cases:
+            try:
+                sim = await tmcp.simulate_transform(program, cases)
+                # soft: simulation faults don't always invalidate
+                if isinstance(sim, dict) and sim.get("ok") is False:
+                    success = False
+            except Exception:
+                pass
+        try:
+            await tmcp.call_tool("observe_local_bandit", {
+                "sessionId": session_id,
+                "localArmId": local_arm_id,
+                "success": success,
+            })
+        except Exception as e:
+            logger.debug("observe_local_bandit failed: %s", e)
+
+    if registered == 0:
+        # Fall back to single-graph propose with category constraint in prompt
+        init = {
+            "user_message": user_message,
+            "context": context,
+            "cases": cases,
+            "prior_turns": prior_turns,
+            "tenant_id": tenant_id,
+            "bandit": bandit_meta,
+            "ddmin": ddmin_meta,
+        }
+        last: dict = {}
+        async for chunk in _graph.astream(init, stream_mode="values"):
+            last = chunk
+        # Enforce category on winner
+        cand = last.get("candidate")
+        allowed_cats = allowed
+        assigned = bandit_meta.get("category")
+        enforced, coerced = enforce_on_program(cand, allowed_cats, assigned_category=assigned)
+        if enforced is None and cand is not None:
+            last["status"] = "unverifiable"
+            last["rationale"] = "bandit_category aborted (invalid/missing tag)"
+            last["candidate"] = None
+            return last
+        if enforced is not None:
+            last["candidate"] = enforced
+            bm = dict(bandit_meta)
+            bm["category"] = coerced
+            # No invented localArmId — graph fallback is not a registered True REx arm.
+            # Keep engaged=false so Approve does not enqueue pending credit without a real arm.
+            bm["engaged"] = False
+            bm.pop("localArmId", None)
+            last["bandit"] = bm
+        return last
+
+    pick = await tmcp.call_tool("pick_local_bandit", {"sessionId": session_id})
+    if not (pick or {}).get("picked"):
+        return {
+            "candidate": None,
+            "status": "unverifiable",
+            "rationale": "True REx: no local program arms survived",
+            "bandit": bandit_meta,
+            "ddmin": ddmin_meta,
+        }
+
+    program = (pick or {}).get("program")
+    category = (pick or {}).get("category")
+    local_arm_id = (pick or {}).get("localArmId")
+    bm = dict(bandit_meta)
+    bm["category"] = category
+    bm["localArmId"] = local_arm_id
+    bm["engaged"] = True
+    bm["picked"] = pick.get("arm")
+    rationale = f"True REx local Thompson pick ({category})"
+    last = await _run_critics_only(
+        program, context, cases, tenant_id, bm, ddmin_meta, rationale
+    )
+    last["bandit"] = bm
+    if isinstance(last.get("candidate"), dict) and category:
+        cand = dict(last["candidate"])
+        cand["bandit_category"] = category
+        last["candidate"] = cand
+    return last
+
+
 async def _run_critics_only(
     program: dict,
     context: dict,
@@ -341,8 +621,10 @@ async def _run_critics_only(
     tenant_id: str | None,
     bandit_meta: dict | None,
     ddmin_meta: dict | None,
+    rationale: str | None = None,
 ) -> dict:
     """Verify → simulate → metamorphic for a deterministically materialized program."""
+    why = rationale or "deterministic hole-fill (no LLM)"
     tmcp = _mcp.for_tenant(tenant_id)
     verification = await tmcp.verify_program(program)
     if not verification.get("valid"):
@@ -350,7 +632,7 @@ async def _run_critics_only(
             "candidate": program,
             "verification": verification,
             "status": "unverifiable",
-            "rationale": "deterministic program failed verify",
+            "rationale": f"{why} — failed verify",
             "bandit": bandit_meta,
             "ddmin": ddmin_meta,
         }
@@ -366,7 +648,7 @@ async def _run_critics_only(
         "simulation": simulation,
         "metamorphic": metamorphic,
         "status": "ready",
-        "rationale": "deterministic hole-fill (no LLM)",
+        "rationale": why,
         "bandit": bandit_meta,
         "ddmin": ddmin_meta,
     }
@@ -459,13 +741,48 @@ def _build_hypothesis(sig: dict, diagnosis: dict) -> str:
     return "; ".join(parts)
 
 
-def _propose_prompt(sig: dict, sketch: dict, diagnosis: dict | None, bandit: dict | None = None) -> str:
+def _propose_prompt(
+    sig: dict,
+    sketch: dict,
+    diagnosis: dict | None,
+    bandit: dict | None = None,
+    verified_candidates: list | None = None,
+) -> str:
     lines = [
         "Propose a minimal MendrScript program that fixes this ErrorSignature.",
         "Do NOT invent fields outside the signature. Prefer filling the sketch hole.",
         f"ErrorSignature: {sig}",
         f"Sketch: {sketch}",
     ]
+    if verified_candidates:
+        verified = [c for c in verified_candidates if isinstance(c, dict) and c.get("causally_verified")]
+        ruled_out = [c for c in verified_candidates if isinstance(c, dict) and not c.get("causally_verified")]
+        if verified:
+            lines.append(f"causally_verified_root_causes: {verified}")
+        if ruled_out:
+            lines.append(f"tested_and_ruled_out: {ruled_out}")
+    if diagnosis and diagnosis.get("aceSuccessBullets"):
+        lines.append("ACE_Playbook_SUCCESS: " + "; ".join(
+            str(b.get("bullet")) for b in diagnosis["aceSuccessBullets"][:8] if isinstance(b, dict)
+        ))
+    if diagnosis and diagnosis.get("aceFailureWarnOffs"):
+        lines.append("ACE_Playbook_FAILURE_warn_offs: " + "; ".join(
+            str(b.get("bullet")) for b in diagnosis["aceFailureWarnOffs"][:8] if isinstance(b, dict)
+        ))
+    if diagnosis and diagnosis.get("repairSuccessHeuristics"):
+        lines.append("Topology_Heuristics_SUCCESS: " + "; ".join(
+            str(h.get("heuristic")) for h in diagnosis["repairSuccessHeuristics"][:8] if isinstance(h, dict)
+        ))
+    if diagnosis and diagnosis.get("repairFailureWarnOffs"):
+        lines.append("Topology_Heuristics_FAILURE_warn_offs: " + "; ".join(
+            str(h.get("heuristic")) for h in diagnosis["repairFailureWarnOffs"][:8] if isinstance(h, dict)
+        ))
+    if diagnosis and diagnosis.get("metaMemory"):
+        lines.append("MetaMemory_rules: " + "; ".join(
+            str(r.get("rule")) for r in diagnosis["metaMemory"][:8] if isinstance(r, dict)
+        ))
+    if diagnosis and diagnosis.get("compiledPrompt"):
+        lines.append("CompiledPrompt_addendum:\n" + str(diagnosis["compiledPrompt"])[:2000])
     if diagnosis and diagnosis.get("hypothesis"):
         lines.append(f"DiagnosticHypothesis: {diagnosis['hypothesis']}")
     if diagnosis and diagnosis.get("precedents"):
@@ -479,6 +796,10 @@ def _propose_prompt(sig: dict, sketch: dict, diagnosis: dict | None, bandit: dic
     if bandit and bandit.get("engaged") and bandit.get("arms"):
         cats = [a.get("category") for a in bandit["arms"] if isinstance(a, dict)]
         lines.append(f"BanditPreferredCategories: {cats}")
+        lines.append(
+            "REQUIRED: set propose_program.bandit_category to exactly one of "
+            f"{cats}. Invalid tags abort the branch."
+        )
         if bandit.get("category"):
             lines.append(f"Prefer strategy category {bandit['category']} (Thompson-sampled).")
     if diagnosis and diagnosis.get("owner_action_required"):
@@ -489,3 +810,98 @@ def _propose_prompt(sig: dict, sketch: dict, diagnosis: dict | None, bandit: dic
         if diagnosis.get("lagReason"):
             lines.append(f"LagEvidence: {diagnosis['lagReason']}")
     return "\n".join(lines)
+
+
+async def _ps_probe_single(
+    tmcp: McpClient,
+    field: dict,
+    cases: list,
+    sig: dict,
+    complexity: dict | None,
+) -> list[dict]:
+    """N=1 Probability-of-Sufficiency probe via simulate_transform + fail-closed schema check."""
+    if not isinstance(field, dict):
+        return []
+    path = field.get("json_path") or field.get("path")
+    minimal_op = field.get("minimal_op")
+    if not isinstance(minimal_op, dict):
+        ct = str(field.get("change_type") or "").upper()
+        if path and ("COERCE" in ct or "TYPE" in ct):
+            minimal_op = {
+                "op": "coerce",
+                "path": path,
+                "targetType": field.get("expected_type") or "string",
+            }
+        elif path and ("DEFAULT" in ct or "ADD" in ct):
+            minimal_op = {"op": "default", "path": path, "value": "", "on": "absent"}
+        elif path and "REMOVE" in ct:
+            minimal_op = {"op": "remove", "path": path}
+        elif field.get("from") and field.get("to"):
+            minimal_op = {"op": "rename", "from": field["from"], "to": field["to"]}
+        else:
+            return [{
+                "field": path,
+                "candidate_op": field,
+                "causally_verified": False,
+                "source": "ps_probe_no_op",
+            }]
+
+    program = {
+        "schemaVersion": SCHEMA_VERSION,
+        "rationale": f"causal PS probe: correcting {path} alone",
+        "ops": [minimal_op],
+    }
+    failing_case = None
+    if cases:
+        first = cases[0]
+        if isinstance(first, dict):
+            failing_case = first if "input" in first else {"input": first.get("payload") or first}
+
+    sim: dict = {}
+    try:
+        sim = await tmcp.simulate_transform(program, [failing_case] if failing_case else [])
+    except Exception as e:
+        logger.debug("PS probe simulate failed: %s", e)
+        return [{
+            "field": path,
+            "candidate_op": minimal_op,
+            "causally_verified": False,
+            "source": "ps_probe_sim_error",
+        }]
+
+    target_schema = await _load_target_schema(tmcp, sig)
+    resolved = validates_against_schema(sim, target_schema)
+    return [{
+        "field": path,
+        "candidate_op": minimal_op,
+        "causally_verified": resolved,
+        "source": "ps_probe",
+        "simulation": {"ok": resolved},
+    }]
+
+
+async def _load_target_schema(tmcp: McpClient, sig: dict) -> dict | None:
+    """Best-effort contract schema for fail-closed PS validation."""
+    coords = sig.get("contract_coords") if isinstance(sig.get("contract_coords"), dict) else {}
+    service = coords.get("service") or coords.get("targetService")
+    endpoint = coords.get("endpoint")
+    direction = coords.get("direction") or "REQUEST"
+    if not service or not endpoint:
+        return None
+    try:
+        contract = await tmcp.get_contract(service, endpoint, direction)
+        if not isinstance(contract, dict):
+            return None
+        for key in ("inferredSchema", "inferred_schema", "schema", "receiverSchema", "exampleSchema"):
+            schema = contract.get(key)
+            if isinstance(schema, dict) and schema:
+                return schema
+        nested = contract.get("contract")
+        if isinstance(nested, dict):
+            for key in ("inferredSchema", "inferred_schema", "schema"):
+                schema = nested.get(key)
+                if isinstance(schema, dict) and schema:
+                    return schema
+    except Exception as e:
+        logger.debug("get_contract for PS probe skipped: %s", e)
+    return None

@@ -16,11 +16,11 @@ import java.util.Map;
  * {@link AnalysisToolResult} the real tool path returns — one shape, two producers —
  * built from the structured context rather than scraping a flat prompt string.
  */
-final class MockAnalysis {
+public final class MockAnalysis {
 
     private MockAnalysis() {}
 
-    static AnalysisToolResult build(StructuredFailureContext sc, FailureAnalysisContext ctx, String model) {
+    public static AnalysisToolResult build(StructuredFailureContext sc, FailureAnalysisContext ctx, String model) {
         // Prefer the deterministic finding: identical decision the real Tier-1 path forces.
         DeterministicFinding finding = sc.deterministicFinding();
         if (finding != null && finding.hasConfidentMatch() && finding.structuredDiff() != null) {

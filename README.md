@@ -81,7 +81,93 @@ If the volume was created on non-pgvector Postgres, recreate it (e.g.
 `docker compose down -v` then `up`) so the vector extension can install.
 
 Fresh `docker compose up` on a new volume applies `init.sql` → `init_v2_*` →
-`init_v3_*` → `init_v4_*` → `init_v5_*` automatically.
+`init_v3_*` → `init_v4_*` → `init_v5_*` → `init_v6_*` → `init_v7_*` automatically.
+
+### Self-learning substrate (Phase 0)
+
+Existing volumes do not re-run init scripts. Apply manually (idempotent):
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v6_phase8_moat.sql
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v7_self_learning.sql
+```
+
+Creates `learning_traces`, `counterexample_suite`, and `offline_regression_payloads`
+(with `scrub_status` PENDING/COMPLETED/FAILED for async PII scrub).
+
+### Phase 1 ACE + RegressionHarness
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v8_phase1_regression_ace.sql
+```
+
+Creates `ace_playbook` and `regression_harness_runs`.
+
+### Phase 2 topology-scoped repair heuristics
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v9_phase2_repair_heuristics.sql
+```
+
+Creates `repair_heuristics` (required `topology_scope`; ExpeL Reflector/Curator).
+
+### Phase 3 LILO skills + MetaMemory
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v10_phase3_lilo_metamemory.sql
+```
+
+Creates `skill_library`, `meta_memory`, and `error_precedents.archived_at` (Semantic Memory archive).
+
+### Phase 5 EvolveMem retrieval config
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v11_phase5_evolvemem.sql
+```
+
+Creates versioned `retrieval_config` (topK / thresholds / decay; harness promote+revert).
+
+### Phase 6 GEPA compiled prompts
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v12_phase6_gepa.sql
+```
+
+Creates `compiled_prompts`. Enable with `MENDR_GEPA_ENABLED=true` and
+`MENDR_DSPY_PII_SCRUB_APPROVED=true` after scrub is proven (≥5 COMPLETED offline payloads).
+Optional DSPy path: `MENDR_DSPY_ENABLED=true` + `MENDR_CONVERSATION_GEPA_COMPILE_URL`.
+
+### Phase 7 Cross-tenant pool (opt-in)
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v13_phase7_cross_tenant.sql
+```
+
+Creates `cross_tenant_opt_in`, `cross_tenant_pool`, `cross_tenant_imports`.
+**Default OFF.** Enable only after contractual privacy review:
+
+```
+MENDR_CROSS_TENANT_ENABLED=true
+```
+
+Then `POST /internal/cross-tenant/opt-in` with explicit privacy attestation:
+
+```json
+{
+  "publishEnabled": true,
+  "importEnabled": true,
+  "privacyReviewed": true,
+  "reviewedBy": "privacy-officer@example.com",
+  "notes": "contract X reviewed YYYY-MM-DD"
+}
+```
+
+Bare toggles without `privacyReviewed=true` + `reviewedBy` are rejected.
+When `MENDR_AUTH_ENFORCE=true`, `/internal/cross-tenant/**` requires authentication.
+Publish anonymizes skills/heuristics/playbook; import requires local critic + RegressionHarness.
+Diagnose and Tier-3/MCP agents never see raw pool payloads — use
+`GET /internal/cross-tenant/pool` + `POST /import` only; after ACCEPTED import,
+local `match_skill` / heuristics / playbook serve diagnose.
 
 ## Multi-tenancy, isolation & auth
 

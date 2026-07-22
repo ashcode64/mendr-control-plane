@@ -32,7 +32,8 @@ public record SafetyScore(
                 1.0 - clamp01(modelConfidence),
                 1.0 - clamp01(deterministicAgreement),
                 1.0 - clamp01(metamorphicPassRate),
-                1.0 - clamp01(specTrust)
+                1.0 - clamp01(specTrust),
+                1.0 - clamp01(precedentQuality)
         };
     }
 

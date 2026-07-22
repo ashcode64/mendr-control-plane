@@ -87,13 +87,27 @@ class ContextToolExecutorPrecedentsTest {
         when(precedentsEmbedClient.embed(any())).thenAnswer(inv ->
                 SignatureEmbedder.embedSignature(inv.getArgument(0)));
 
+        var evolveMem = org.mockito.Mockito.mock(
+                com.selfhealing.analysis.service.evolvemem.EvolveMemService.class);
+        org.mockito.Mockito.lenient().when(evolveMem.activeConfig(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(com.selfhealing.analysis.service.evolvemem.RetrievalConfig.defaults());
+        org.mockito.Mockito.lenient().when(evolveMem.applyRetrievalPolicy(
+                        org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(inv -> inv.getArgument(0));
+
         executor = new ContextToolExecutor(
                 jdbcTemplate, new ObjectMapper(), enricher, mendrScriptGatewayClient, precedentsEmbedClient,
                 new com.selfhealing.analysis.service.ddmin.DdminOracleService(
                         mendrScriptGatewayClient, jdbcTemplate,
                         new com.selfhealing.analysis.service.ddmin.DdminLocalizer(),
                         org.mockito.Mockito.mock(com.selfhealing.analysis.observability.MendrErrorSemantics.class)),
-                org.mockito.Mockito.mock(com.selfhealing.analysis.service.bandit.BanditService.class));
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.bandit.BanditService.class),
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.ace.AcePlaybookService.class),
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.heuristics.RepairHeuristicsService.class),
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.skills.SkillLibraryService.class),
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.metamemory.MetaMemoryService.class),
+                evolveMem,
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.gepa.GepaCompileService.class));
         ReflectionTestUtils.setField(executor, "lagWindowMinutes", 15);
         ReflectionTestUtils.setField(executor, "vectorTopK", 8);
         ReflectionTestUtils.setField(executor, "crossTenantChampions", false);

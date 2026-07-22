@@ -46,6 +46,8 @@ public class AiAnalysisService {
     private final ErrorSignatureAssembler  errorSignatureAssembler;
     private final SafetyGateService        safetyGateService;
     private final ApprovalDeployPublisher  approvalDeployPublisher;
+    private final LearningTraceWriter      learningTraceWriter;
+    private final com.selfhealing.analysis.service.safety.PrecedentQualityScorer precedentQualityScorer;
 
     /** Legacy fallback only — Safety Gate / conformal owns the approval boundary. */
     @Value("${anthropic.confidence-threshold:0.75}")
@@ -260,12 +262,18 @@ public class AiAnalysisService {
                 : 0.35;
         boolean hitlReview = refuseAutoHeal
                 || "HITL_REVIEW".equals(toolResult.ruleType());
+        String endpoint = event.getEndpoint();
+        double precedentQuality = precedentQualityScorer.score(
+                ctx.category(),
+                signature != null ? signature.changeType() : null,
+                endpoint);
+        meta.put("precedentQuality", precedentQuality);
         SafetyScore safetyScore = safetyGateService.buildScore(
                 modelConfidence,
                 deterministicAgreement,
                 metamorphicPassRate,
                 signature != null ? signature.specTrust() : null,
-                0.5);
+                precedentQuality);
         SafetyGateResult gate = safetyGateService.evaluate(
                 refuseAutoHeal, validationFailed, routingUndeployable, effect.effective(),
                 hitlReview, safetyScore);
@@ -285,6 +293,7 @@ public class AiAnalysisService {
                 .status(status)
                 .build();
         result = analysisRepository.save(result);
+        learningTraceWriter.linkAnalysisId(event.getFailureId(), result.getId());
 
         // Plan 8.0 step 5: conformal accept + auto-apply → same deploy path as human Approve.
         if (status == AnalysisResult.AnalysisStatus.APPROVED) {
@@ -395,10 +404,17 @@ public class AiAnalysisService {
                     || (ctx.corsUpstreamDiff() != null && ctx.corsUpstreamDiff().hasDeterministicRule())
                     || (ctx.corsEdgeDiff() != null && ctx.corsEdgeDiff().hasDeterministicRule());
             boolean multiHop = isMultiHop(ctx);
-            body.put("complexity", Map.of(
-                    "deterministicDiff", deterministic,
-                    "category", ctx.category() != null ? ctx.category() : "UNKNOWN",
-                    "multiHop", multiHop));
+            List<Map<String, Object>> driftedFields = DriftedFieldsAssembler.fromContext(
+                    ctx.schemaDiff(), ctx.responseDiff());
+            Map<String, Object> complexity = new LinkedHashMap<>();
+            complexity.put("deterministicDiff", deterministic);
+            complexity.put("category", ctx.category() != null ? ctx.category() : "UNKNOWN");
+            complexity.put("multiHop", multiHop);
+            complexity.put("driftedFields", driftedFields);
+            if (ctx.event().getHttpMethod() != null) {
+                complexity.put("httpMethod", ctx.event().getHttpMethod());
+            }
+            body.put("complexity", complexity);
 
             com.fasterxml.jackson.databind.ObjectMapper mapper =
                     new com.fasterxml.jackson.databind.ObjectMapper();
@@ -425,6 +441,7 @@ public class AiAnalysisService {
                 return null;
             }
             Map<String, Object> parsed = mapper.readValue(resp.body(), Map.class);
+            persistLearningTrace(ctx, signature, driftedFields, parsed);
             AnalysisToolResult interpreted = interpretDiagnoseResponse(parsed);
             if (interpreted == null) {
                 log.info("Diagnose returned non-ready without HITL refuse for {} — status={}",
@@ -439,6 +456,79 @@ public class AiAnalysisService {
             log.warn("Diagnose call failed for {}: {}", ctx.event().getFailureId(), e.getMessage());
             return null;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void persistLearningTrace(
+            FailureAnalysisContext ctx,
+            ErrorSignature signature,
+            List<Map<String, Object>> driftedFields,
+            Map<String, Object> parsed) {
+        try {
+            Object ddmin = parsed.get("ddmin");
+            Object verified = parsed.get("verifiedCandidates");
+            Object bandit = parsed.get("bandit");
+            String banditCategory = null;
+            if (bandit instanceof Map<?, ?> bm && bm.get("category") != null) {
+                banditCategory = com.selfhealing.analysis.service.bandit.BanditCategory.normalize(
+                        bm.get("category").toString());
+            }
+            if (banditCategory == null && parsed.get("program") instanceof Map<?, ?> prog
+                    && prog.get("bandit_category") != null) {
+                banditCategory = com.selfhealing.analysis.service.bandit.BanditCategory.normalize(
+                        prog.get("bandit_category").toString());
+            }
+            String oraclePath = null;
+            Object causalMinimal = null;
+            if (ddmin instanceof Map<?, ?> dm) {
+                if (dm.get("oraclePath") != null) oraclePath = dm.get("oraclePath").toString();
+                else if (dm.get("path") != null) oraclePath = dm.get("path").toString();
+                causalMinimal = dm.get("minimal");
+            }
+            String critic = null;
+            if (parsed.get("verification") instanceof Map<?, ?> v
+                    && v.get("errors") != null) {
+                critic = String.valueOf(v.get("errors"));
+            }
+            String outcome = resolveLearningOutcome(parsed);
+            learningTraceWriter.write(
+                    signature != null ? signature.tenantId() : null,
+                    ctx.event().getFailureId(),
+                    null,
+                    signature != null ? signature.toMap() : null,
+                    parsed.get("sketch") instanceof Map<?, ?> sk
+                            ? (Map<String, Object>) sk : null,
+                    driftedFields,
+                    causalMinimal,
+                    oraclePath,
+                    verified,
+                    parsed.get("program"),
+                    banditCategory,
+                    critic,
+                    outcome);
+        } catch (Exception e) {
+            log.debug("learning trace persist skipped: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Map /diagnose status to {@code learning_traces.outcome} CHECK values only:
+     * {@code PENDING | SUCCESS | FAILURE} (init_v7).
+     * <ul>
+     *   <li>ready / HITL → PENDING (awaiting approve or Wilson)</li>
+     *   <li>unverifiable → FAILURE (diagnose produced no valid program)</li>
+     *   <li>SUCCESS is reserved for post-deploy Wilson — never set here</li>
+     * </ul>
+     */
+    static String resolveLearningOutcome(Map<String, Object> parsed) {
+        if (parsed == null || parsed.isEmpty()) return "PENDING";
+        if (diagnoseRefuse(parsed)) return "PENDING";
+        String status = String.valueOf(parsed.getOrDefault("status", "")).trim().toLowerCase();
+        return switch (status) {
+            case "unverifiable" -> "FAILURE";
+            case "ready", "hitl", "refuse", "owner_action", "" -> "PENDING";
+            default -> "PENDING";
+        };
     }
 
     /**

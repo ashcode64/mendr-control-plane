@@ -6,6 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import jakarta.annotation.PostConstruct;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -16,20 +17,24 @@ import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * Hierarchical gated bandit (Phase 8.3c): global Beta(α,β) by strategy category,
- * local ≤3 REx arms seeded from global prior. Global credit is async only
- * (Approve → pending; quality lifecycle → credit/debit).
+ * True REx hierarchical bandit (Phase 4):
+ * <ul>
+ *   <li>Global arms = fixed category tags in {@code bandit_state} (async Wilson credit only)</li>
+ *   <li>Local arms = literal MendrScript programs (in-memory Beta per incident session)</li>
+ * </ul>
+ * Never sync-updates global Beta at Approve — only {@link #enqueuePendingCredit}.
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class BanditService {
 
-    public static final List<String> CATEGORIES = List.of(
-            "STRUCTURAL_MAPPING", "DATA_COERCION", "ADD_DEFAULT",
-            "FIELD_REMOVE", "RESPONSE_MAP", "ROUTING", "CORS");
+    /** @deprecated use {@link BanditCategory#ALL} */
+    public static final List<String> CATEGORIES = BanditCategory.ALL;
 
     private final JdbcTemplate jdbcTemplate;
+
+    private LocalBanditStore localStore;
 
     @Value("${mendr.bandit.enabled:true}")
     private boolean enabled;
@@ -39,6 +44,20 @@ public class BanditService {
 
     @Value("${mendr.bandit.candidates:3}")
     private int candidates;
+
+    @Value("${mendr.bandit.local-ttl-ms:3600000}")
+    private long localTtlMs;
+
+    @PostConstruct
+    void initLocalStore() {
+        localStore = new LocalBanditStore(localTtlMs);
+    }
+
+    /** Visible for tests. */
+    LocalBanditStore localStore() {
+        if (localStore == null) localStore = new LocalBanditStore(localTtlMs);
+        return localStore;
+    }
 
     public static String mapChangeTypeToCategory(String changeType) {
         if (changeType == null) return "STRUCTURAL_MAPPING";
@@ -57,12 +76,44 @@ public class BanditService {
         return !onlyAmbiguous || ambiguousAgentLoop;
     }
 
-    /** Thompson-sample up to {@code candidates} distinct categories. */
+    /**
+     * Thompson-sample ≤{@code candidates} distinct categories and open a local session
+     * seeded from global (α,β). Local program arms are registered later via
+     * {@link #registerLocalProgram}.
+     */
+    @SuppressWarnings("unchecked")
     public List<Map<String, Object>> selectLocalArms(UUID tenantId, List<String> preferred) {
-        if (!enabled) return List.of();
+        Map<String, Object> session = openSession(tenantId, preferred, null);
+        Object arms = session.get("arms");
+        if (arms instanceof List<?> list) {
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Object o : list) {
+                if (o instanceof Map<?, ?> m) out.add((Map<String, Object>) m);
+            }
+            return out;
+        }
+        return List.of();
+    }
+
+    /** Open True REx session: category arms + sessionId for local program posterior. */
+    public Map<String, Object> openSession(UUID tenantId, List<String> preferred, String sessionIdHint) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("engaged", false);
+        out.put("arms", List.of());
+        if (!enabled) {
+            out.put("reason", "disabled");
+            return out;
+        }
+
         List<String> cats = preferred == null || preferred.isEmpty()
-                ? new ArrayList<>(CATEGORIES)
-                : new ArrayList<>(preferred);
+                ? new ArrayList<>(BanditCategory.ALL)
+                : preferred.stream()
+                    .map(BanditCategory::normalize)
+                    .filter(c -> c != null)
+                    .distinct()
+                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        if (cats.isEmpty()) cats = new ArrayList<>(BanditCategory.ALL);
+
         List<Scored> scored = new ArrayList<>();
         Random rng = ThreadLocalRandom.current();
         for (String cat : cats) {
@@ -71,8 +122,10 @@ public class BanditService {
             scored.add(new Scored(cat, sample, ab[0], ab[1]));
         }
         scored.sort(Comparator.comparingDouble(Scored::sample).reversed());
-        int n = Math.min(candidates, scored.size());
+        int n = Math.min(Math.max(1, candidates), scored.size());
+
         List<Map<String, Object>> arms = new ArrayList<>();
+        List<String> allowed = new ArrayList<>();
         for (int i = 0; i < n; i++) {
             Scored s = scored.get(i);
             Map<String, Object> arm = new LinkedHashMap<>();
@@ -80,15 +133,108 @@ public class BanditService {
             arm.put("thompson", s.sample());
             arm.put("alpha", s.alpha());
             arm.put("beta", s.beta());
-            arm.put("localArmId", s.category() + "#" + i);
+            arm.put("slot", i);
+            // Category-level placeholder id (programs get real localArmIds on register)
+            arm.put("localArmId", s.category() + "#cat" + i);
             arms.add(arm);
+            allowed.add(s.category());
         }
-        return arms;
+
+        String sessionId = (sessionIdHint != null && !sessionIdHint.isBlank())
+                ? sessionIdHint
+                : UUID.randomUUID().toString();
+        localStore().open(sessionId, tenantId, allowed);
+
+        out.put("engaged", true);
+        out.put("sessionId", sessionId);
+        out.put("arms", arms);
+        out.put("allowedCategories", allowed);
+        if (!arms.isEmpty()) {
+            out.put("category", arms.get(0).get("category"));
+            out.put("selected", arms.get(0));
+        }
+        return out;
     }
 
-    /** Enqueue pending credit on human Approve — never sync-update global Beta here. */
-    public void enqueuePendingCredit(UUID tenantId, UUID analysisId, String category, String localArmId) {
-        if (category == null || category.isBlank()) return;
+    public Map<String, Object> registerLocalProgram(
+            String sessionId,
+            String category,
+            Map<String, Object> program) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        LocalBanditStore.Session session = localStore().get(sessionId);
+        if (session == null) {
+            out.put("registered", false);
+            out.put("error", "unknown_or_expired_session");
+            return out;
+        }
+        String coerced = BanditCategory.coerceOrAbort(category, session.allowedCategories);
+        if (coerced == null) {
+            out.put("registered", false);
+            out.put("error", "category_aborted");
+            out.put("rawCategory", category);
+            out.put("allowedCategories", session.allowedCategories);
+            return out;
+        }
+        double[] ab = loadBeta(session.tenantId, coerced);
+        LocalBanditStore.ProgramArm arm = localStore().register(
+                sessionId, coerced, program, ab[0], ab[1]);
+        if (arm == null) {
+            out.put("registered", false);
+            out.put("error", "register_failed");
+            return out;
+        }
+        out.put("registered", true);
+        out.put("arm", arm.toMap());
+        out.put("coercedCategory", coerced);
+        return out;
+    }
+
+    public Map<String, Object> observeLocal(String sessionId, String localArmId, boolean success) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        LocalBanditStore.ProgramArm arm = localStore().observe(sessionId, localArmId, success);
+        if (arm == null) {
+            out.put("updated", false);
+            out.put("error", "arm_not_found");
+            return out;
+        }
+        out.put("updated", true);
+        out.put("arm", arm.toMap());
+        // Local only — never touch bandit_state here
+        out.put("globalUpdated", false);
+        return out;
+    }
+
+    public Map<String, Object> pickLocal(String sessionId) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        LocalBanditStore.ProgramArm arm = localStore().thompsonPick(
+                sessionId, ThreadLocalRandom.current());
+        if (arm == null) {
+            out.put("picked", false);
+            out.put("error", "no_local_arms");
+            return out;
+        }
+        out.put("picked", true);
+        out.put("arm", arm.toMap());
+        out.put("category", arm.category());
+        out.put("localArmId", arm.localArmId());
+        out.put("program", arm.program());
+        return out;
+    }
+
+    public List<Map<String, Object>> localSnapshot(String sessionId) {
+        return localStore().snapshot(sessionId);
+    }
+
+    /**
+     * Enqueue pending credit on human Approve — never sync-update global Beta here.
+     * Invalid / non-enum categories are refused (Phase 4 guardrail).
+     */
+    public boolean enqueuePendingCredit(UUID tenantId, UUID analysisId, String category, String localArmId) {
+        String norm = BanditCategory.normalize(category);
+        if (norm == null) {
+            log.warn("bandit pending credit aborted: invalid category={}", category);
+            return false;
+        }
         try {
             jdbcTemplate.update("""
                 INSERT INTO bandit_pending_credit (tenant_id, analysis_id, category, local_arm_id, status)
@@ -96,10 +242,12 @@ public class BanditService {
                 """,
                     tenantId == null ? null : tenantId.toString(),
                     analysisId == null ? null : analysisId.toString(),
-                    category,
+                    norm,
                     localArmId);
+            return true;
         } catch (Exception e) {
             log.debug("bandit pending credit skipped: {}", e.getMessage());
+            return false;
         }
     }
 
@@ -111,7 +259,14 @@ public class BanditService {
                 WHERE analysis_id = ?::uuid AND status = 'PENDING'
                 """, analysisId == null ? null : analysisId.toString());
             for (Map<String, Object> row : pending) {
-                String cat = String.valueOf(row.get("category"));
+                String cat = BanditCategory.normalize(String.valueOf(row.get("category")));
+                if (cat == null) {
+                    jdbcTemplate.update("""
+                        UPDATE bandit_pending_credit SET status = 'DEBITED', resolved_at = NOW()
+                        WHERE id = ?::uuid
+                        """, row.get("id").toString());
+                    continue;
+                }
                 UUID tenant = row.get("tenant_id") == null ? null
                         : UUID.fromString(row.get("tenant_id").toString());
                 if (success) {
@@ -134,18 +289,20 @@ public class BanditService {
     }
 
     public void credit(UUID tenantId, String category, boolean success) {
-        ensureRow(tenantId, category);
+        String norm = BanditCategory.normalize(category);
+        if (norm == null) return;
+        ensureRow(tenantId, norm);
         try {
             if (success) {
                 jdbcTemplate.update("""
                     UPDATE bandit_state SET alpha = alpha + 1, pulls = pulls + 1, updated_at = NOW()
                     WHERE category = ? AND (tenant_id IS NOT DISTINCT FROM ?::uuid)
-                    """, category, tenantId == null ? null : tenantId.toString());
+                    """, norm, tenantId == null ? null : tenantId.toString());
             } else {
                 jdbcTemplate.update("""
                     UPDATE bandit_state SET beta = beta + 1, pulls = pulls + 1, updated_at = NOW()
                     WHERE category = ? AND (tenant_id IS NOT DISTINCT FROM ?::uuid)
-                    """, category, tenantId == null ? null : tenantId.toString());
+                    """, norm, tenantId == null ? null : tenantId.toString());
             }
         } catch (Exception e) {
             log.debug("bandit credit skipped: {}", e.getMessage());
