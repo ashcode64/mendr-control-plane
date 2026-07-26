@@ -62,6 +62,7 @@ public class OpenApiImportService {
     private final OpenApiSpecRegistryRepository specRegistryRepository;
     private final RouteChangedPublisher routeChangedPublisher;
     private final OpenApiFetchGuard fetchGuard;
+    private final TopologyGraphWriter topologyGraphWriter;
 
     public OpenApiImportResult dryRun(String raw) {
         return importInternal(raw, null, null, true);
@@ -195,6 +196,7 @@ public class OpenApiImportService {
         int contractsCreated = 0, contractsUpdated = 0;
         Set<String> seenRouteKeys = new HashSet<>();
         Set<String> seenContractKeys = new HashSet<>();
+        Set<String> seenTopologyEdgeKeys = new HashSet<>();
 
         if (!dryRun) {
             ServiceRegistration reg = ServiceRegistration.builder()
@@ -252,6 +254,14 @@ public class OpenApiImportService {
                                     .isActive(true)
                                     .build());
                             routesCreated++;
+                        }
+                        // Topology graph side-effect: declared edge sourceApp -> serviceName.
+                        // service_routes stays the operational routing config; this is the map.
+                        topologyGraphWriter.recordDeclaredEdge(sourceApp, serviceName, path, method,
+                                TopologyGraphWriter.SOURCE_OPENAPI_DECLARED, DEFAULT_SPEC_TRUST);
+                        String topoKey = TopologyGraphWriter.edgeKey(sourceApp, serviceName, path);
+                        if (topoKey != null) {
+                            seenTopologyEdgeKeys.add(topoKey);
                         }
                     } else {
                         routesCreated++;
@@ -321,6 +331,18 @@ public class OpenApiImportService {
                     .isActive(true)
                     .build();
             specRegistryRepository.save(row);
+
+            // Topology drift: close OPENAPI_DECLARED edges into this service that the fresh
+            // spec no longer declares (SCD2 valid_to, never a hard delete), then rebuild the
+            // content-addressed adjacency snapshot / graph_version once for the whole import.
+            try {
+                topologyGraphWriter.closeAbsentDeclaredEdges(
+                        sourceApp, serviceName, TopologyGraphWriter.SOURCE_OPENAPI_DECLARED, seenTopologyEdgeKeys);
+                topologyGraphWriter.rebuildSnapshot();
+            } catch (Exception e) {
+                log.warn("Topology snapshot rebuild after OpenAPI import of '{}' skipped: {}",
+                        serviceName, e.getMessage());
+            }
 
             routeChangedPublisher.publishAll();
         }

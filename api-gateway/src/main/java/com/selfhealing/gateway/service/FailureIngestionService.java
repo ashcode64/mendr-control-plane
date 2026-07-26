@@ -144,7 +144,8 @@ public class FailureIngestionService {
             respPayload.put("problemDetail", normalizedPd);
         }
 
-        ApiFailure failure = persistFailureWithResponse(req, 502, "RESPONSE_MISMATCH", message, respPayload);
+        ApiFailure failure = persistFailureWithResponse(req, 502, "RESPONSE_MISMATCH", message, respPayload,
+                new FailureCorrelation(correlationId, requestId, null));
         publishEvent(failure, "RESPONSE_MISMATCH", null, null, null, null, null, null, null,
                 correlationId, requestId, normalizedPd, responseHeaders);
         return failure;
@@ -194,13 +195,15 @@ public class FailureIngestionService {
         if (message == null || message.isBlank()) {
             message = request.getErrorMessage();
         }
+        FailureCorrelation correlation = new FailureCorrelation(
+                request.getCorrelationId(), request.getRequestId(), request.getTraceparent());
         if (request.getResponsePayload() != null && !request.getResponsePayload().isEmpty()) {
             return persistFailureWithResponse(
                     proxy, request.getErrorCode(), request.getErrorType(),
-                    message, request.getResponsePayload());
+                    message, request.getResponsePayload(), correlation);
         }
         return persistFailure(proxy, request.getErrorCode(), request.getErrorType(),
-                message, null);
+                message, null, correlation);
     }
 
     /** Normalize via {@link ProblemDetail} so extensions round-trip consistently on Kafka. */
@@ -212,6 +215,11 @@ public class FailureIngestionService {
 
     private ApiFailure persistFailure(ProxyRequest req, int code, String type,
                                       String message, String responseBody) {
+        return persistFailure(req, code, type, message, responseBody, FailureCorrelation.NONE);
+    }
+
+    private ApiFailure persistFailure(ProxyRequest req, int code, String type,
+                                      String message, String responseBody, FailureCorrelation correlation) {
         Map<String, Object> respPayload = null;
         if (responseBody != null && !responseBody.isBlank()) {
             respPayload = Map.of("raw", responseBody);
@@ -222,18 +230,28 @@ public class FailureIngestionService {
                 .errorCode(code).errorType(type)
                 .requestPayload(req.getPayload()).responsePayload(respPayload)
                 .errorMessage(message)
+                .correlationId(correlation.correlationId()).requestId(correlation.requestId())
+                .traceparent(correlation.traceparent())
                 .detectedAt(LocalDateTime.now()).status(ApiFailure.FailureStatus.OPEN)
                 .build());
     }
 
     private ApiFailure persistFailureWithResponse(ProxyRequest req, int code, String type,
                                                   String message, Map<String, Object> responsePayload) {
+        return persistFailureWithResponse(req, code, type, message, responsePayload, FailureCorrelation.NONE);
+    }
+
+    private ApiFailure persistFailureWithResponse(ProxyRequest req, int code, String type,
+                                                  String message, Map<String, Object> responsePayload,
+                                                  FailureCorrelation correlation) {
         return failureRepository.save(ApiFailure.builder()
                 .serviceA(req.getSourceService()).serviceB(req.getTargetService())
                 .endpoint(req.getEndpoint()).httpMethod(req.getMethod())
                 .errorCode(code).errorType(type)
                 .requestPayload(req.getPayload()).responsePayload(responsePayload)
                 .errorMessage(message)
+                .correlationId(correlation.correlationId()).requestId(correlation.requestId())
+                .traceparent(correlation.traceparent())
                 .detectedAt(LocalDateTime.now()).status(ApiFailure.FailureStatus.OPEN)
                 .build());
     }
@@ -256,6 +274,7 @@ public class FailureIngestionService {
                 .upstreamOriginSent(upstreamOriginSent)
                 .correlationId(correlationId)
                 .requestId(requestId)
+                .traceparent(failure.getTraceparent())
                 .problemDetail(problemDetail)
                 .responseHeaders(responseHeaders)
                 .build());
@@ -294,6 +313,11 @@ public class FailureIngestionService {
     }
 
     private record RoutingEnrichment(String registeredBaseUrl, String dnsProbeDiscoveryUrl) {}
+
+    /** Trace-context correlation persisted on the {@link ApiFailure} row (init_v14). */
+    private record FailureCorrelation(String correlationId, String requestId, String traceparent) {
+        static final FailureCorrelation NONE = new FailureCorrelation(null, null, null);
+    }
 
     public record IngestOutcome(String status, UUID failureId) {
         public static IngestOutcome accepted(UUID failureId) {

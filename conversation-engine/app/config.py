@@ -72,6 +72,21 @@ class Settings:
     max_context_chars: int = int(os.getenv("MENDR_CHAT_MAX_CONTEXT_CHARS", "16000"))
     rate_limit_per_min: int = int(os.getenv("MENDR_CHAT_RATE_LIMIT_PER_MIN", "20"))
 
+    # ── Zero-hallucination RCA narrative (enumerate→select→verify→cite→abstain) ─
+    # OFF by default: the narrative is additive telemetry over the deterministic
+    # topology CTEs and never gates a heal. When ON, every causal sentence must cite
+    # a topology edge/node id that the symbolic verifier (verify_rca_claims) confirms
+    # against the live graph, or the whole narrative abstains.
+    rca_narrative_enabled: bool = _bool("MENDR_RCA_NARRATIVE_ENABLED", False)
+    # Forward-dependency depth / path enumeration caps handed to the topology tools.
+    rca_max_depth: int = int(os.getenv("MENDR_RCA_MAX_DEPTH", "6"))
+    rca_max_paths: int = int(os.getenv("MENDR_RCA_MAX_PATHS", "20"))
+    # Conformal factuality risk budget (alpha). Faithfulness (supported/total claims)
+    # must be >= 1 - alpha AND no claim may be unsupported, else we abstain.
+    rca_factuality_alpha: float = float(os.getenv("MENDR_RCA_FACTUALITY_ALPHA", "0.05"))
+    # Minimum LLM self-confidence on the selected path before we render (else abstain).
+    rca_min_confidence: float = float(os.getenv("MENDR_RCA_MIN_CONFIDENCE", "0.4"))
+
     @property
     def active_llm_model(self) -> str:
         if self.llm_provider == "gemini":

@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -144,6 +145,125 @@ public class ContractReconciliationAnalyzer {
                 .missingDeclaredCount(missing)
                 .undeclaredAppearedCount(undeclared)
                 .build();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Topology drift: the SAME declared-vs-observed shape logic, lifted from a
+    // single payload to the whole dependency graph. Reuses the MISSING_DECLARED /
+    // UNDECLARED_APPEARED framing at edge granularity:
+    //   OBSERVED_UNDECLARED  — traffic edge with no declared counterpart = a SHADOW
+    //                          dependency (security shape; never auto-heal).
+    //   DECLARED_UNOBSERVED  — declared edge never seen in traffic = a possibly-stale
+    //                          / dead dependency (informational).
+    // Pure set logic over caller-supplied edge sets; the DB read (RLS-scoped) lives
+    // in TopologyQueryService so this class stays side-effect-free and unit-testable.
+    // ─────────────────────────────────────────────────────────────────────────
+
+    public enum TopologyDriftKind {
+        OBSERVED_UNDECLARED,
+        DECLARED_UNOBSERVED
+    }
+
+    @Value
+    @Builder
+    public static class TopologyEdge {
+        /** Canonical comparison key (e.g. {@code source>target}). Drives set membership. */
+        String key;
+        String sourceService;
+        String targetService;
+        String endpoint;
+    }
+
+    @Value
+    @Builder
+    public static class EdgeDrift {
+        TopologyDriftKind kind;
+        String edgeKey;
+        String sourceService;
+        String targetService;
+        String detail;
+        boolean securityRelevant;
+    }
+
+    @Value
+    @Builder
+    public static class TopologyDriftResult {
+        List<EdgeDrift> drifts;
+        int observedUndeclaredCount;
+        int declaredUnobservedCount;
+
+        public boolean hasSecurityFindings() {
+            return observedUndeclaredCount > 0;
+        }
+    }
+
+    /**
+     * Diff declared edges (manifest / OpenAPI) against observed edges (edge traffic).
+     * Comparison is by each {@link TopologyEdge#getKey()} — the caller chooses granularity
+     * (service-pair {@code source>target} is the robust default; endpoint templates are
+     * noisier to match against concrete observed paths).
+     */
+    public TopologyDriftResult analyzeTopology(Collection<TopologyEdge> declared,
+                                               Collection<TopologyEdge> observed) {
+        Map<String, TopologyEdge> declaredByKey = indexByKey(declared);
+        Map<String, TopologyEdge> observedByKey = indexByKey(observed);
+
+        List<EdgeDrift> out = new ArrayList<>();
+        int observedUndeclared = 0;
+        int declaredUnobserved = 0;
+
+        for (Map.Entry<String, TopologyEdge> e : observedByKey.entrySet()) {
+            if (!declaredByKey.containsKey(e.getKey())) {
+                TopologyEdge edge = e.getValue();
+                out.add(EdgeDrift.builder()
+                        .kind(TopologyDriftKind.OBSERVED_UNDECLARED)
+                        .edgeKey(e.getKey())
+                        .sourceService(edge.getSourceService())
+                        .targetService(edge.getTargetService())
+                        .detail("traffic observed with no declared edge (shadow dependency)")
+                        .securityRelevant(true)
+                        .build());
+                observedUndeclared++;
+            }
+        }
+
+        for (Map.Entry<String, TopologyEdge> e : declaredByKey.entrySet()) {
+            if (!observedByKey.containsKey(e.getKey())) {
+                TopologyEdge edge = e.getValue();
+                out.add(EdgeDrift.builder()
+                        .kind(TopologyDriftKind.DECLARED_UNOBSERVED)
+                        .edgeKey(e.getKey())
+                        .sourceService(edge.getSourceService())
+                        .targetService(edge.getTargetService())
+                        .detail("declared edge never observed in traffic (possibly stale / dead dependency)")
+                        .securityRelevant(false)
+                        .build());
+                declaredUnobserved++;
+            }
+        }
+
+        if (observedUndeclared > 0) {
+            log.info("ContractReconciliation: {} OBSERVED_UNDECLARED topology edge(s) — shadow dependency",
+                    observedUndeclared);
+        }
+
+        return TopologyDriftResult.builder()
+                .drifts(out)
+                .observedUndeclaredCount(observedUndeclared)
+                .declaredUnobservedCount(declaredUnobserved)
+                .build();
+    }
+
+    private static Map<String, TopologyEdge> indexByKey(Collection<TopologyEdge> edges) {
+        Map<String, TopologyEdge> out = new LinkedHashMap<>();
+        if (edges != null) {
+            for (TopologyEdge e : edges) {
+                if (e != null && e.getKey() != null && !out.containsKey(e.getKey())) {
+                    out.put(e.getKey(), e);
+                }
+            }
+        }
+        return out;
     }
 
     @SuppressWarnings("unchecked")

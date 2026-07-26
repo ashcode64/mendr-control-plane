@@ -47,6 +47,7 @@ public class ManifestImportService {
     private final ServiceRouteRepository routeRepository;
     private final RouteChangedPublisher routeChangedPublisher;
     private final ObjectMapper jsonMapper;
+    private final TopologyGraphWriter topologyGraphWriter;
 
     private final YAMLMapper yamlMapper = new YAMLMapper();
 
@@ -105,6 +106,7 @@ public class ManifestImportService {
 
         // Outbound calls → explicit routes + caller-side contracts.
         Set<String> seenRouteKeys = new HashSet<>();
+        Set<String> seenTopologyEdgeKeys = new HashSet<>();
         for (OutboundCall call : nullSafe(manifest.getOutbound())) {
             String target = call.getTargetService().trim();
             String endpoint = normalizeEndpoint(call.getEndpoint());
@@ -118,7 +120,8 @@ public class ManifestImportService {
                 continue;
             }
 
-            upsertRoute(serviceName, target, endpoint, method, matchType, call.getDescription(), routeLines);
+            upsertRoute(serviceName, target, endpoint, method, matchType, call.getDescription(),
+                    routeLines, seenTopologyEdgeKeys);
 
             // Caller-side expectations of the downstream contract (same endpoint).
             registerContractIfPresent(serviceName, endpoint, method, "REQUEST", version,
@@ -129,6 +132,20 @@ public class ManifestImportService {
 
         // Single republish after all entities are persisted.
         routeChangedPublisher.publishAll();
+
+        // Topology drift: close MANIFEST_DECLARED outbound edges from this service that the fresh
+        // manifest no longer declares (SCD2 valid_to, never a hard delete), then rebuild the
+        // content-addressed adjacency snapshot / graph_version once for the whole manifest. Scoped
+        // to source=serviceName (targetService=null) since a manifest declares many outbound
+        // targets from a single service.
+        try {
+            topologyGraphWriter.closeAbsentDeclaredEdges(
+                    serviceName, null, TopologyGraphWriter.SOURCE_MANIFEST_DECLARED, seenTopologyEdgeKeys);
+            topologyGraphWriter.rebuildSnapshot();
+        } catch (Exception e) {
+            log.warn("Topology snapshot rebuild after manifest import of '{}' skipped: {}",
+                    serviceName, e.getMessage());
+        }
 
         log.info("Imported manifest for '{}': {} contracts, {} routes, {} warnings",
                 serviceName, contractLines.size(), routeLines.size(), warnings.size());
@@ -295,7 +312,8 @@ public class ManifestImportService {
     }
 
     private void upsertRoute(String source, String target, String endpoint, String method,
-                             String matchType, String description, List<String> routeLines) {
+                             String matchType, String description, List<String> routeLines,
+                             Set<String> seenTopologyEdgeKeys) {
         ServiceRoute route = routeRepository
                 .findBySourceServiceAndTargetServiceAndEndpointAndHttpMethod(source, target, endpoint, method)
                 .orElseGet(ServiceRoute::new);
@@ -307,6 +325,14 @@ public class ManifestImportService {
         route.setDescription(description);
         route.setActive(true);
         routeRepository.save(route);
+        // Topology graph side-effect: declared edge source -> target (architectural map;
+        // service_routes remains the operational routing config).
+        topologyGraphWriter.recordDeclaredEdge(source, target, endpoint, method,
+                TopologyGraphWriter.SOURCE_MANIFEST_DECLARED, 1.0);
+        String topoKey = TopologyGraphWriter.edgeKey(source, target, endpoint);
+        if (topoKey != null) {
+            seenTopologyEdgeKeys.add(topoKey);
+        }
         routeLines.add(source + " -> " + target + " " + method + " " + endpoint);
     }
 

@@ -2,6 +2,7 @@ package com.selfhealing.analysis.service.tool;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.service.FailureContextEnricher;
+import com.selfhealing.analysis.service.TopologyQueryService;
 import com.selfhealing.analysis.service.context.TopologyContext;
 import com.selfhealing.analysis.service.embed.SignatureEmbedder;
 import lombok.RequiredArgsConstructor;
@@ -32,6 +33,7 @@ public class ContextToolExecutor {
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
     private final FailureContextEnricher enricher;
+    private final TopologyQueryService topologyQueryService;
     private final MendrScriptGatewayClient mendrScriptGatewayClient;
     private final com.selfhealing.analysis.service.embed.PrecedentsEmbedClient precedentsEmbedClient;
     private final com.selfhealing.analysis.service.ddmin.DdminOracleService ddminOracleService;
@@ -64,6 +66,52 @@ public class ContextToolExecutor {
                     "Fetch the manifest-derived dependency graph for a service (who it calls, who calls it).",
                     Map.of("service", strProp()),
                     List.of("service")),
+            toolDef("get_blast_radius",
+                    "TOPOLOGY (deterministic). If this service fails, who is transitively affected — "
+                            + "backward reachability over current topology edges with a cycle guard + depth cap. "
+                            + "Returns {affected:[{service, depth}]}. Ground truth; never invent affected services.",
+                    Map.of(
+                            "service", strProp(),
+                            "maxDepth", Map.of("type", "integer", "description", "Optional hop cap (default 10)")),
+                    List.of("service")),
+            toolDef("get_root_cause_candidates",
+                    "TOPOLOGY (deterministic). This service is failing — what did it (transitively) depend on? "
+                            + "Forward reachability, ranked so confirmed causal-cascade dependencies outrank merely "
+                            + "structurally-reachable ones. Also returns an ENUMERATED closed set of real dependency "
+                            + "paths (each with pathIndex + edgeIds). For RCA, SELECT a pathIndex — do not invent a path.",
+                    Map.of(
+                            "service", strProp(),
+                            "maxDepth", Map.of("type", "integer", "description", "Optional hop cap (default 10)")),
+                    List.of("service")),
+            toolDef("get_dependency_path",
+                    "TOPOLOGY (deterministic). Enumerate real forward dependency paths from one service to another "
+                            + "(each with pathIndex, ordered services, and edgeIds). Empty when no path exists — "
+                            + "a claimed connection with no path here is structurally impossible.",
+                    Map.of(
+                            "fromService", strProp(),
+                            "toService", strProp(),
+                            "maxDepth", Map.of("type", "integer", "description", "Optional hop cap (default 10)")),
+                    List.of("fromService", "toService")),
+            toolDef("get_dependency_cycles",
+                    "TOPOLOGY (deterministic). Detect circular dependencies (A->B->C->A) as a first-class "
+                            + "architectural finding. Returns {cycles:[{services:[...]}]}.",
+                    Map.of("maxDepth", Map.of("type", "integer", "description", "Optional hop cap (default 10)")),
+                    List.of()),
+            toolDef("get_topology_drift",
+                    "TOPOLOGY (deterministic). Reconcile declared (manifest/OpenAPI) vs observed (traffic) edges. "
+                            + "Returns OBSERVED_UNDECLARED shadow dependencies (security-shaped) and "
+                            + "DECLARED_UNOBSERVED possibly-dead edges. No args.",
+                    Map.of(),
+                    List.of()),
+            toolDef("verify_rca_claims",
+                    "TOPOLOGY (symbolic verifier — Postgres as solver). Check each claimed edge / node / causal edge "
+                            + "against the CURRENT topology. A claim is supported ONLY if the concrete row exists now. "
+                            + "Call this to fail-closed on any RCA sentence before presenting it. "
+                            + "claims: list of {type?, edgeId?, nodeId?, sourceService?, targetService?, endpoint?}.",
+                    Map.of("claims", Map.of("type", "array",
+                            "description", "Claims to verify",
+                            "items", Map.of("type", "object"))),
+                    List.of("claims")),
             toolDef("get_active_rules",
                     "List the currently active transformation / origin-override / routing rules on a route.",
                     Map.of(
@@ -225,6 +273,17 @@ public class ContextToolExecutor {
             return switch (toolName) {
                 case "get_contract" -> getContract(s(input, "service"), s(input, "endpoint"), s(input, "direction"));
                 case "get_service_topology" -> getTopology(s(input, "service"));
+                case "get_blast_radius" -> topologyQueryService.blastRadius(
+                        s(input, "service"), intArg(input, "maxDepth", TopologyQueryService.DEFAULT_MAX_DEPTH));
+                case "get_root_cause_candidates" -> getRootCauseCandidates(input);
+                case "get_dependency_path" -> topologyQueryService.dependencyPaths(
+                        s(input, "fromService"), s(input, "toService"),
+                        intArg(input, "maxDepth", TopologyQueryService.DEFAULT_MAX_DEPTH),
+                        TopologyQueryService.DEFAULT_MAX_PATHS);
+                case "get_dependency_cycles" -> topologyQueryService.dependencyCycles(
+                        intArg(input, "maxDepth", TopologyQueryService.DEFAULT_MAX_DEPTH));
+                case "get_topology_drift" -> topologyQueryService.topologyDrift();
+                case "verify_rca_claims" -> verifyRcaClaims(input);
                 case "get_active_rules" -> getActiveRules(
                         s(input, "sourceService"), s(input, "targetService"), s(input, "endpoint"));
                 case "get_recent_dns_probes" -> getRecentProbes(s(input, "service"));
@@ -288,6 +347,49 @@ public class ContextToolExecutor {
     private Object getTopology(String service) {
         TopologyContext topo = enricher.loadTopology(service, null, null);
         return topo == null ? Map.of("found", false) : topo;
+    }
+
+    /** Root-cause candidates + the enumerated closed set of real dependency paths to select from. */
+    private Object getRootCauseCandidates(Map<String, Object> input) {
+        String service = s(input, "service");
+        int maxDepth = intArg(input, "maxDepth", TopologyQueryService.DEFAULT_MAX_DEPTH);
+        Map<String, Object> candidates = new LinkedHashMap<>(
+                topologyQueryService.rootCauseCandidates(service, maxDepth));
+        Map<String, Object> paths = topologyQueryService.rootCausePaths(
+                service, maxDepth, TopologyQueryService.DEFAULT_MAX_PATHS);
+        candidates.put("paths", paths.get("paths"));
+        candidates.put("pathCount", paths.get("count"));
+        candidates.put("note", paths.get("note"));
+        return candidates;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object verifyRcaClaims(Map<String, Object> input) {
+        List<Map<String, Object>> claims = new ArrayList<>();
+        Object raw = input == null ? null : input.get("claims");
+        if (raw instanceof List<?> list) {
+            for (Object o : list) {
+                if (o instanceof Map<?, ?> m) {
+                    claims.add((Map<String, Object>) m);
+                }
+            }
+        }
+        return topologyQueryService.verifyClaims(claims);
+    }
+
+    private static int intArg(Map<String, Object> input, String key, int def) {
+        Object v = input == null ? null : input.get(key);
+        if (v instanceof Number n) {
+            return n.intValue();
+        }
+        if (v instanceof String s && !s.isBlank()) {
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException e) {
+                return def;
+            }
+        }
+        return def;
     }
 
     private Object getActiveRules(String source, String target, String endpoint) {

@@ -40,6 +40,8 @@ public class IngestFailureRequest {
     /** Correlation / request ids from the calling client (Phase 7 telemetry). */
     private String correlationId;
     private String requestId;
+    /** W3C trace-context header propagated from the edge (init_v14 causal correlation). */
+    private String traceparent;
 
     /** Optional upstream response headers captured at the edge. */
     private Map<String, Object> responseHeaders;

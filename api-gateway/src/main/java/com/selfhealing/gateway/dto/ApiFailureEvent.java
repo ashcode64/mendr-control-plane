@@ -40,6 +40,8 @@ public class ApiFailureEvent {
     /** Client correlation / request id from the edge (Phase 7). */
     private String correlationId;
     private String requestId;
+    /** W3C trace-context header propagated from the edge (init_v14 causal correlation). */
+    private String traceparent;
     /** RFC 9457 Problem Details (dual-accept with errorMessage). */
     private Map<String, Object> problemDetail;
     /** Selected upstream response headers from the edge. */

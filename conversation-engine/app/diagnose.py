@@ -182,7 +182,7 @@ async def run_diagnose(
                 diagnosis["metaMemory"] = (mm or {}).get("rules") or []
             except Exception as me:
                 logger.debug("meta memory fetch skipped: %s", me)
-            try {
+            try:
                 cp = await tmcp.call_tool("get_compiled_prompt", {"promptKind": "propose_addendum"})
                 if cp and cp.get("found") and cp.get("promptText"):
                     diagnosis["compiledPrompt"] = cp.get("promptText")
@@ -452,6 +452,16 @@ async def run_diagnose(
         diagnosis.get("refuseAutoHeal") or diagnosis.get("owner_action_required")
     ))
     ready = status == "ready"
+
+    # Additive, gated: a verified+cited topology RCA narrative (never gates the heal).
+    rca_narrative: dict | None = None
+    if settings.rca_narrative_enabled:
+        try:
+            from .rca_narrative import run_rca_narrative
+            rca_narrative = await run_rca_narrative(sig, tmcp, tenant_id=tenant_id)
+        except Exception as e:
+            logger.debug("rca narrative skipped: %s", e)
+
     return {
         "status": status,
         "program": last.get("candidate"),
@@ -475,6 +485,7 @@ async def run_diagnose(
         "owner_action_required": bool(diagnosis and diagnosis.get("owner_action_required")),
         "lagReason": (diagnosis or {}).get("lagReason") if diagnosis else None,
         "lagEvidence": list((diagnosis or {}).get("lagEvidence") or []) if diagnosis else [],
+        "rcaNarrative": rca_narrative,
     }
 
 

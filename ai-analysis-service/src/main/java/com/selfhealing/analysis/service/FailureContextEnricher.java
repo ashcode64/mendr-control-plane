@@ -334,6 +334,95 @@ public class FailureContextEnricher {
      */
     public TopologyContext loadTopology(String serviceA, String serviceB, String endpoint) {
         if (serviceA == null && serviceB == null) return null;
+        // Prefer the union-of-sources architectural graph (init_v14 service_topology_edges),
+        // which also captures observed edges Mendr never proxies; fall back to service_routes.
+        try {
+            TopologyContext graph = loadTopologyFromGraph(serviceA, serviceB, endpoint);
+            if (graph != null && !graph.isEmpty()) {
+                return graph;
+            }
+        } catch (Exception e) {
+            log.debug("topology graph read failed, falling back to service_routes: {}", e.getMessage());
+        }
+        return loadTopologyFromRoutes(serviceA, serviceB, endpoint);
+    }
+
+    /**
+     * Current-edge topology from {@code service_topology_edges} (union of declared + observed
+     * sources, RLS-scoped). Keeps the {@link TopologyContext} 1-hop shape; deeper transitive
+     * reachability + causal annotation is served by the dedicated topology MCP tools.
+     */
+    private TopologyContext loadTopologyFromGraph(String serviceA, String serviceB, String endpoint) {
+        TopologyContext.Edge failingCall = null;
+        if (serviceA != null && serviceB != null && endpoint != null) {
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList("""
+                SELECT sn.service_name AS source_service, tn.service_name AS target_service,
+                       e.endpoint_template AS endpoint, e.http_method, e.source_type
+                FROM service_topology_edges e
+                JOIN service_topology_nodes sn ON sn.id = e.source_node_id
+                JOIN service_topology_nodes tn ON tn.id = e.target_node_id
+                WHERE e.valid_to IS NULL
+                  AND lower(sn.service_name) = lower(?) AND lower(tn.service_name) = lower(?)
+                  AND e.endpoint_template = ?
+                ORDER BY e.confidence DESC, e.last_confirmed_at DESC LIMIT 1
+                """, serviceA, serviceB, endpoint);
+            if (!rows.isEmpty()) {
+                failingCall = toGraphEdge(rows.get(0));
+                String desc = loadEndpointDescription(serviceB, endpoint);
+                if (desc != null) {
+                    failingCall = new TopologyContext.Edge(serviceA, serviceB, endpoint,
+                            failingCall.httpMethod(), desc);
+                }
+            }
+        }
+
+        List<TopologyContext.Edge> sourceOutbound = serviceA == null ? List.of()
+                : toGraphEdges(jdbcTemplate.queryForList("""
+                    SELECT DISTINCT sn.service_name AS source_service, tn.service_name AS target_service,
+                           e.endpoint_template AS endpoint, e.http_method, e.source_type
+                    FROM service_topology_edges e
+                    JOIN service_topology_nodes sn ON sn.id = e.source_node_id
+                    JOIN service_topology_nodes tn ON tn.id = e.target_node_id
+                    WHERE e.valid_to IS NULL AND lower(sn.service_name) = lower(?)
+                    ORDER BY tn.service_name, e.endpoint_template LIMIT 25
+                    """, serviceA));
+
+        List<TopologyContext.Edge> targetInbound = serviceB == null ? List.of()
+                : toGraphEdges(jdbcTemplate.queryForList("""
+                    SELECT DISTINCT sn.service_name AS source_service, tn.service_name AS target_service,
+                           e.endpoint_template AS endpoint, e.http_method, e.source_type
+                    FROM service_topology_edges e
+                    JOIN service_topology_nodes sn ON sn.id = e.source_node_id
+                    JOIN service_topology_nodes tn ON tn.id = e.target_node_id
+                    WHERE e.valid_to IS NULL AND lower(tn.service_name) = lower(?)
+                    ORDER BY sn.service_name, e.endpoint_template LIMIT 25
+                    """, serviceB));
+
+        TopologyContext topo = new TopologyContext(
+                failingCall,
+                sourceOutbound.isEmpty() ? null : sourceOutbound,
+                targetInbound.isEmpty() ? null : targetInbound);
+        return topo.isEmpty() ? null : topo;
+    }
+
+    private static List<TopologyContext.Edge> toGraphEdges(List<Map<String, Object>> rows) {
+        List<TopologyContext.Edge> out = new ArrayList<>();
+        for (Map<String, Object> row : rows) out.add(toGraphEdge(row));
+        return out;
+    }
+
+    private static TopologyContext.Edge toGraphEdge(Map<String, Object> row) {
+        // description carries provenance (source_type) so the model can weigh declared vs observed.
+        return new TopologyContext.Edge(
+                strOrNull(row.get("source_service")),
+                strOrNull(row.get("target_service")),
+                strOrNull(row.get("endpoint")),
+                strOrNull(row.get("http_method")),
+                strOrNull(row.get("source_type")));
+    }
+
+    private TopologyContext loadTopologyFromRoutes(String serviceA, String serviceB, String endpoint) {
+        if (serviceA == null && serviceB == null) return null;
         try {
             TopologyContext.Edge failingCall = null;
             if (serviceA != null && serviceB != null && endpoint != null) {

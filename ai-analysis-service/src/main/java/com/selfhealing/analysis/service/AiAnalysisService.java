@@ -604,6 +604,12 @@ public class AiAnalysisService {
                 rules.put("_lagEvidence", dmap.get("lagEvidence"));
             }
         }
+        // Zero-hallucination RCA narrative (additive; behind MENDR_RCA_NARRATIVE_ENABLED).
+        // Surfaced as evidence only — it never changes ruleType or the auto-heal decision.
+        if (parsed.get("rcaNarrative") instanceof Map<?, ?> rca
+                && Boolean.TRUE.equals(rca.get("enabled"))) {
+            rules.put("_rcaNarrative", rca);
+        }
 
         AnalysisToolResult.Source source = model.toLowerCase().contains("gemini")
                 ? AnalysisToolResult.Source.GEMINI

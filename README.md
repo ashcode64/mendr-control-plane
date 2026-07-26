@@ -201,6 +201,14 @@ tenants. See **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)** for the full des
 configuration reference, verification, and **the frontend changes still required**
 to enable human (WorkOS) auth.
 
+## Service topology & zero-hallucination RCA
+
+A native-PostgreSQL, SCD2 service-dependency graph (declared + observed + causal edges) drives
+deterministic blast-radius / root-cause / drift queries, and a verified, cited, **abstaining**
+LLM root-cause narrative that can only select from the enumerated real paths. See
+**[docs/SERVICE_TOPOLOGY_RCA.md](docs/SERVICE_TOPOLOGY_RCA.md)** for the data model, write/read
+paths, MCP tools, config flags, and the differential CTE + faithfulness test harnesses.
+
 ## Ports
 
 - `3000` dashboard

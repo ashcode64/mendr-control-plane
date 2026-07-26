@@ -30,6 +30,7 @@ class OpenApiImportServiceTest {
     @Mock private ServiceContractRepository contractRepository;
     @Mock private OpenApiSpecRegistryRepository specRegistryRepository;
     @Mock private RouteChangedPublisher routeChangedPublisher;
+    @Mock private TopologyGraphWriter topologyGraphWriter;
 
     private OpenApiImportService service;
 
@@ -98,7 +99,7 @@ class OpenApiImportServiceTest {
         OpenApiFetchGuard fetchGuard = new OpenApiFetchGuard(registryService, specRegistryRepository);
         service = new OpenApiImportService(
                 registryService, routeRepository, contractRepository,
-                specRegistryRepository, routeChangedPublisher, fetchGuard);
+                specRegistryRepository, routeChangedPublisher, fetchGuard, topologyGraphWriter);
     }
 
     @Test

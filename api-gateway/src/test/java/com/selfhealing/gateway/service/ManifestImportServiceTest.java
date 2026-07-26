@@ -35,6 +35,7 @@ class ManifestImportServiceTest {
     @Mock private ServiceRegistryService registryService;
     @Mock private ServiceRouteRepository routeRepository;
     @Mock private RouteChangedPublisher routeChangedPublisher;
+    @Mock private TopologyGraphWriter topologyGraphWriter;
 
     private ManifestImportService importService;
 
@@ -73,7 +74,8 @@ class ManifestImportServiceTest {
     @BeforeEach
     void setUp() {
         importService = new ManifestImportService(
-                registryService, routeRepository, routeChangedPublisher, new ObjectMapper());
+                registryService, routeRepository, routeChangedPublisher, new ObjectMapper(),
+                topologyGraphWriter);
         lenient().when(routeRepository.save(any(ServiceRoute.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
     }

@@ -96,7 +96,9 @@ class ContextToolExecutorPrecedentsTest {
                 .thenAnswer(inv -> inv.getArgument(0));
 
         executor = new ContextToolExecutor(
-                jdbcTemplate, new ObjectMapper(), enricher, mendrScriptGatewayClient, precedentsEmbedClient,
+                jdbcTemplate, new ObjectMapper(), enricher,
+                org.mockito.Mockito.mock(com.selfhealing.analysis.service.TopologyQueryService.class),
+                mendrScriptGatewayClient, precedentsEmbedClient,
                 new com.selfhealing.analysis.service.ddmin.DdminOracleService(
                         mendrScriptGatewayClient, jdbcTemplate,
                         new com.selfhealing.analysis.service.ddmin.DdminLocalizer(),

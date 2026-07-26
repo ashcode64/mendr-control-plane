@@ -27,6 +27,9 @@ services:
       - ./infra/init_v11_phase5_evolvemem.sql:/docker-entrypoint-initdb.d/init_v11_phase5_evolvemem.sql
       - ./infra/init_v12_phase6_gepa.sql:/docker-entrypoint-initdb.d/init_v12_phase6_gepa.sql
       - ./infra/init_v13_phase7_cross_tenant.sql:/docker-entrypoint-initdb.d/init_v13_phase7_cross_tenant.sql
+      # Service topology graph (SCD2 edges) + zero-hallucination RCA store (auto-applies on fresh volumes;
+      # existing volumes: psql -U admin -d selfhealing < infra/init_v14_service_topology.sql)
+      - ./infra/init_v14_service_topology.sql:/docker-entrypoint-initdb.d/init_v14_service_topology.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s
@@ -164,6 +167,13 @@ services:
       MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
       MENDR_CORS_ALLOWED_ORIGINS: ${MENDR_CORS_ALLOWED_ORIGINS:-http://localhost:3000}
       MENDR_CHAT_RATE_LIMIT_PER_MIN: ${MENDR_CHAT_RATE_LIMIT_PER_MIN:-20}
+      # Zero-hallucination RCA narrative (enumerate->select->verify->cite->conformal->abstain).
+      # OFF by default: additive telemetry over the deterministic topology CTEs; never gates a heal.
+      MENDR_RCA_NARRATIVE_ENABLED: ${MENDR_RCA_NARRATIVE_ENABLED:-false}
+      MENDR_RCA_MAX_DEPTH: ${MENDR_RCA_MAX_DEPTH:-6}
+      MENDR_RCA_MAX_PATHS: ${MENDR_RCA_MAX_PATHS:-20}
+      MENDR_RCA_FACTUALITY_ALPHA: ${MENDR_RCA_FACTUALITY_ALPHA:-0.05}
+      MENDR_RCA_MIN_CONFIDENCE: ${MENDR_RCA_MIN_CONFIDENCE:-0.4}
     depends_on:
       ai-analysis-service:
         condition: service_started

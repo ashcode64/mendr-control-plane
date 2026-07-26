@@ -58,6 +58,20 @@ public class ApiFailure implements TenantScoped {
     @Column(name = "error_message")
     private String errorMessage;
 
+    /**
+     * Trace-context correlation fields (init_v14). Persisted so CausalCascadeBuilder can
+     * correlate an upstream failure with its downstream cascade by shared trace/correlation id
+     * rather than by timing alone.
+     */
+    @Column(name = "correlation_id")
+    private String correlationId;
+
+    @Column(name = "request_id")
+    private String requestId;
+
+    @Column(name = "traceparent")
+    private String traceparent;
+
     @Column(name = "detected_at")
     private LocalDateTime detectedAt;
 
