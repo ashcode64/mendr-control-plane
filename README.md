@@ -2,6 +2,7 @@
 
 This repository contains the cloud/on-prem control-plane services for Mendr:
 
+- `mendr-minimize` (Rust remediation minimization sidecar)
 - `api-gateway`
 - `ai-analysis-service`
 - `rule-engine`
@@ -168,6 +169,27 @@ Publish anonymizes skills/heuristics/playbook; import requires local critic + Re
 Diagnose and Tier-3/MCP agents never see raw pool payloads — use
 `GET /internal/cross-tenant/pool` + `POST /import` only; after ACCEPTED import,
 local `match_skill` / heuristics / playbook serve diagnose.
+
+### Remediation minimization (Rust sidecar)
+
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v15_minimization_pairs.sql
+```
+
+Service `mendr-minimize` runs L2 necessity (ddmin-over-ops) + L3 algebraic/`egg` + L4
+size-gated `prove_minimal`. **api-gateway** exposes `POST /api/internal/mendrscript/minimize`
+(Java mandatory re-verify + fallback). MCP tool: `minimize_program`. The conversation-engine
+runs minimization **after critics and before present**, so the program a user chats about /
+approves is already minimal.
+
+```
+MENDR_MINIMIZE_ENABLED=true
+MENDR_MINIMIZE_BASE_URL=http://mendr-minimize:8099
+```
+
+Preference pairs `(chosen=minimal, rejected=draft)` land in `minimization_preference_pairs`
+when **op counts** shrink (same-size valueMutating wins are presented but not preference-logged).
+DPO training still deferred. See `mendr-minimize/README.md` and CI workflow `mendr-minimize.yml`.
 
 ## Multi-tenancy, isolation & auth
 

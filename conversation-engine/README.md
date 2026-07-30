@@ -18,8 +18,13 @@ the result to the UI over SSE.
 ## Graph
 
 ```
-load_context → propose → verify → (valid ? simulate : refine→propose, bounded) → present
+load_context → propose → verify → (valid ? simulate : refine→propose, bounded)
+  → metamorphic → minimize → present
 ```
+
+Minimization runs **after critics and before present**, so the program the operator
+chats about / approves is already the minimal equivalent AST (or the original draft
+if re-verify fails).
 
 ## Run
 

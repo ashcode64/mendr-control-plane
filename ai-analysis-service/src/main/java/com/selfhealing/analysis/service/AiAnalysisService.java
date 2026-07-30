@@ -9,6 +9,7 @@ import com.selfhealing.analysis.service.safety.SafetyGateResult;
 import com.selfhealing.analysis.service.safety.SafetyGateService;
 import com.selfhealing.analysis.service.safety.SafetyScore;
 import com.selfhealing.analysis.service.tool.AnalysisToolResult;
+import com.selfhealing.analysis.service.tool.MendrScriptGatewayClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,6 +49,7 @@ public class AiAnalysisService {
     private final ApprovalDeployPublisher  approvalDeployPublisher;
     private final LearningTraceWriter      learningTraceWriter;
     private final com.selfhealing.analysis.service.safety.PrecedentQualityScorer precedentQualityScorer;
+    private final MendrScriptGatewayClient mendrScriptGatewayClient;
 
     /** Legacy fallback only — Safety Gate / conformal owns the approval boundary. */
     @Value("${anthropic.confidence-threshold:0.75}")
@@ -196,6 +198,10 @@ public class AiAnalysisService {
 
         enrichRoutingRules(transformationRules, event);
         enrichOriginOverrideRules(transformationRules, event);
+
+        // Defense-in-depth: minimize MendrScript ASTs even on the legacy LLM path
+        // (diagnose already minimized; re-minimize is idempotent when already minimal).
+        transformationRules = minimizeDslProgramIfPresent(transformationRules, ctx, signature);
 
         confidence = calibrateConfidence(confidence, modelConfidence, transformationRules, ctx);
 
@@ -385,19 +391,31 @@ public class AiAnalysisService {
             body.put("errorSignature", sigMap);
 
             List<Map<String, Object>> cases = new ArrayList<>();
+            Object triggeringPayload = null;
             if (ctx.event().getRequestPayload() != null && !ctx.event().getRequestPayload().isEmpty()) {
+                triggeringPayload = ctx.event().getRequestPayload();
                 cases.add(Map.of("input", ctx.event().getRequestPayload()));
             }
             if ("RESPONSE_MISMATCH".equalsIgnoreCase(ctx.category())) {
                 Map<String, Object> resp = extractResponseForCases(ctx.event().getResponsePayload());
                 if (!resp.isEmpty()) {
                     cases.add(Map.of("input", resp));
+                    if (triggeringPayload == null) {
+                        triggeringPayload = resp;
+                    }
                 }
             }
             if (cases.isEmpty()) {
                 cases.add(Map.of("input", Map.of()));
             }
             body.put("cases", cases);
+            // Twin gate 2: explicit incident payload (never rely on CE inferring cases[0]).
+            if (triggeringPayload != null) {
+                body.put("triggeringPayload", triggeringPayload);
+            }
+            if (signature.specTrust() != null) {
+                body.put("specTrust", signature.specTrust());
+            }
 
             boolean deterministic = (ctx.schemaDiff() != null && ctx.schemaDiff().hasDeterministicRule())
                     || (ctx.responseDiff() != null && ctx.responseDiff().hasDeterministicRule())
@@ -838,6 +856,119 @@ public class AiAnalysisService {
         if (!"DSL_PROGRAM".equalsIgnoreCase(str(rules.get("type")))) return false;
         Object ops = rules.get("ops");
         return ops instanceof List<?> list && !list.isEmpty();
+    }
+
+    /**
+     * Call gateway minimize for MendrScript ASTs (legacy LLM path + defense-in-depth).
+     * On failure, returns the original rules unchanged (Java re-verify already owns correctness).
+     * When op counts shrink, persists a preference pair (same substrate as MCP minimize_program).
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> minimizeDslProgramIfPresent(
+            Map<String, Object> rules,
+            FailureAnalysisContext ctx,
+            ErrorSignature signature) {
+        if (!isDslProgram(rules)) {
+            return rules;
+        }
+        try {
+            Map<String, Object> program = new LinkedHashMap<>(rules);
+            program.remove("type");
+            List<Map<String, Object>> cases = new ArrayList<>();
+            Object triggering = null;
+            if (ctx.event().getRequestPayload() != null && !ctx.event().getRequestPayload().isEmpty()) {
+                triggering = ctx.event().getRequestPayload();
+                cases.add(Map.of("input", ctx.event().getRequestPayload()));
+            }
+            // Match tryDiagnose: RESPONSE_MISMATCH also seeds the response body.
+            if ("RESPONSE_MISMATCH".equalsIgnoreCase(ctx.category())) {
+                Map<String, Object> resp = extractResponseForCases(ctx.event().getResponsePayload());
+                if (!resp.isEmpty()) {
+                    cases.add(Map.of("input", resp));
+                    if (triggering == null) {
+                        triggering = resp;
+                    }
+                }
+            }
+            if (cases.isEmpty()) {
+                cases.add(Map.of("input", Map.of()));
+            }
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("program", program);
+            body.put("cases", cases);
+            if (triggering != null) {
+                body.put("triggeringPayload", triggering);
+            }
+            if (signature != null && signature.specTrust() != null) {
+                body.put("specTrust", signature.specTrust());
+            }
+            if (signature != null && signature.expectedType() != null && signature.jsonPath() != null) {
+                body.put("declaredFieldTypes", Map.of(signature.jsonPath(), signature.expectedType()));
+            }
+            Map<String, Object> result = mendrScriptGatewayClient.minimize(body);
+            if (result == null || !Boolean.TRUE.equals(result.get("minimized"))) {
+                return rules;
+            }
+            Object minimized = result.get("program");
+            if (!(minimized instanceof Map<?, ?> minMap) || !(minMap.get("ops") instanceof List<?>)) {
+                return rules;
+            }
+            Map<String, Object> out = new LinkedHashMap<>(rules);
+            out.put("ops", minMap.get("ops"));
+            if (minMap.get("schemaVersion") != null) {
+                out.put("schemaVersion", minMap.get("schemaVersion"));
+            }
+            out.put("_minimization", Map.of(
+                    "minimized", true,
+                    "originalOpCount", result.get("originalOpCount"),
+                    "finalOpCount", result.get("finalOpCount"),
+                    "layersApplied", result.getOrDefault("layersApplied", List.of()),
+                    "engine", String.valueOf(result.get("engine"))));
+            log.info("Legacy/defense minimize for {}: {} → {} ops",
+                    ctx.event().getFailureId(),
+                    result.get("originalOpCount"),
+                    result.get("finalOpCount"));
+            captureMinimizationPreferencePair(result);
+            return out;
+        } catch (Exception e) {
+            log.debug("minimizeDslProgram skipped: {}", e.getMessage());
+            return rules;
+        }
+    }
+
+    /** Best-effort L1 preference pair when gateway reported an op-count shrink. */
+    @SuppressWarnings("unchecked")
+    private void captureMinimizationPreferencePair(Map<String, Object> result) {
+        Object origCount = result.get("originalOpCount");
+        Object finalCount = result.get("finalOpCount");
+        boolean sizesDiffer = origCount instanceof Number o && finalCount instanceof Number f
+                && o.intValue() > f.intValue();
+        if (!sizesDiffer || result.get("preferencePair") == null) {
+            return;
+        }
+        try {
+            Object pair = result.get("preferencePair");
+            Map<?, ?> pairMap = pair instanceof Map<?, ?> m ? m : Map.of();
+            java.util.UUID tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+            com.fasterxml.jackson.databind.ObjectMapper mapper =
+                    new com.fasterxml.jackson.databind.ObjectMapper();
+            jdbcTemplate.update("""
+                INSERT INTO minimization_preference_pairs
+                    (tenant_id, chosen_program, rejected_program, layers, meta)
+                VALUES (?::uuid, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb)
+                """,
+                    tenantId,
+                    mapper.writeValueAsString(pairMap.get("chosen")),
+                    mapper.writeValueAsString(pairMap.get("rejected")),
+                    mapper.writeValueAsString(result.getOrDefault("layersApplied", List.of())),
+                    mapper.writeValueAsString(Map.of(
+                            "originalOpCount", result.get("originalOpCount"),
+                            "finalOpCount", result.get("finalOpCount"),
+                            "engine", String.valueOf(result.get("engine")),
+                            "source", "legacy_ais_minimize")));
+        } catch (Exception e) {
+            log.debug("legacy preference pair capture skipped: {}", e.getMessage());
+        }
     }
 
     private static boolean isEmptyRulePayload(Map<String, Object> rules) {

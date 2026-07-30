@@ -1,9 +1,10 @@
 """Internal diagnosis entry: runs the LangGraph loop on an ErrorSignature.
 
 Complexity-gated:
-  - deterministicDiff → Synthesis only (propose→verify→simulate)
+  - deterministicDiff → Synthesis only (propose→verify→simulate→metamorphic→minimize→present)
   - UNKNOWN / multi-hop → Diagnostic context enrichment then Synthesis
 Critics remain MCP verify_program + simulate_transform (deterministic).
+Minimization runs after critics and before present so approve == already minimal.
 """
 from __future__ import annotations
 
@@ -74,6 +75,8 @@ async def run_diagnose(
     complexity: dict | None = None,
     tenant_id: str | None = None,
     prior_turns: list | None = None,
+    triggering_payload: dict | None = None,
+    spec_trust: float | None = None,
 ) -> dict[str, Any]:
     """Run synthesis against an ErrorSignature; return program + verification + simulation."""
     sig = error_signature or {}
@@ -360,6 +363,19 @@ async def run_diagnose(
             logger.debug("bandit select skipped: %s", e)
 
     user_message = _propose_prompt(sig, sketch, diagnosis, bandit_meta, verified_candidates)
+    # Twin gates: prefer explicit request fields; fall back to signature payload/trust.
+    explicit_trigger = triggering_payload if isinstance(triggering_payload, dict) else None
+    if explicit_trigger is None and isinstance(sig, dict):
+        for key in ("payload", "requestPayload", "failingPayload"):
+            if isinstance(sig.get(key), dict):
+                explicit_trigger = sig[key]
+                break
+    trust = spec_trust
+    if trust is None and isinstance(sig, dict):
+        for key in ("specTrust", "spec_trust"):
+            if isinstance(sig.get(key), (int, float)):
+                trust = float(sig[key])
+                break
     context = {
         "errorSignature": sig,
         "sketch": sketch,
@@ -372,6 +388,10 @@ async def run_diagnose(
         "endpoint": (sig.get("contract_coords") or {}).get("endpoint"),
         "direction": (sig.get("contract_coords") or {}).get("direction", "REQUEST"),
     }
+    if explicit_trigger is not None:
+        context["triggeringPayload"] = explicit_trigger
+    if trust is not None:
+        context["specTrust"] = trust
 
     # Path C: abort ddmin → HITL without synthesis / live probes
     if refuse_ddmin:
@@ -470,6 +490,7 @@ async def run_diagnose(
         "verification": last.get("verification"),
         "simulation": last.get("simulation"),
         "metamorphic": last.get("metamorphic"),
+        "minimization": last.get("minimization"),
         "ddmin": ddmin_meta,
         "bandit": last.get("bandit") or bandit_meta,
         "skill": skill_meta,
@@ -527,6 +548,52 @@ async def _true_rex_diversity(
             continue
         if not session_id:
             continue
+        # Critics first, then minimize, then register — matches approve=minimal invariant.
+        verification = await tmcp.verify_program(program)
+        success = bool((verification or {}).get("valid"))
+        if success and cases:
+            try:
+                sim = await tmcp.simulate_transform(program, cases)
+                if isinstance(sim, dict) and sim.get("ok") is False:
+                    success = False
+            except Exception:
+                pass
+        if not success:
+            logger.debug("diversity arm failed critics for %s", cat)
+            continue
+        try:
+            from .minimize_helpers import (
+                apply_citation_scrub,
+                declared_field_types,
+                explicit_triggering_payload,
+                merge_minimized_candidate,
+                spec_trust,
+                unresolvable_paths,
+            )
+            sketch = (context or {}).get("sketch") or {}
+            sig = (context or {}).get("errorSignature") or (context or {}).get("error_signature") or {}
+            if not isinstance(sig, dict):
+                sig = {}
+            ctx = context or {}
+            min_report = await tmcp.minimize_program(
+                program=program,
+                cases=cases or [],
+                triggering_payload=explicit_triggering_payload(ctx, sig),
+                spec_trust=spec_trust(ctx, sig),
+                allowed_opcodes=sketch.get("allowedOpcodes"),
+                declared_field_types=declared_field_types(ctx, sketch, sig),
+                unresolvable_paths=unresolvable_paths(ctx, sketch, sig),
+            )
+            if isinstance(min_report, dict) and min_report.get("minimized"):
+                merged = merge_minimized_candidate(program, min_report) or program
+                scrub = apply_citation_scrub(program, merged, (program or {}).get("rationale"), None)
+                program = merged
+                if isinstance(program, dict) and scrub.get("rationale"):
+                    program = dict(program)
+                    program["rationale"] = scrub["rationale"]
+        except Exception as e:
+            logger.debug("diversity minimize failed — skipping arm: %s", e)
+            continue
         try:
             reg = await tmcp.call_tool("register_local_program", {
                 "sessionId": session_id,
@@ -540,17 +607,7 @@ async def _true_rex_diversity(
             continue
         local_arm_id = ((reg or {}).get("arm") or {}).get("localArmId")
         registered += 1
-        # Critics update local posterior only
-        verification = await tmcp.verify_program(program)
-        success = bool((verification or {}).get("valid"))
-        if success and cases:
-            try:
-                sim = await tmcp.simulate_transform(program, cases)
-                # soft: simulation faults don't always invalidate
-                if isinstance(sim, dict) and sim.get("ok") is False:
-                    success = False
-            except Exception:
-                pass
+        # Observe local posterior on the minimized, critic-passed arm
         try:
             await tmcp.call_tool("observe_local_bandit", {
                 "sessionId": session_id,
@@ -559,7 +616,6 @@ async def _true_rex_diversity(
             })
         except Exception as e:
             logger.debug("observe_local_bandit failed: %s", e)
-
     if registered == 0:
         # Fall back to single-graph propose with category constraint in prompt
         init = {
@@ -634,7 +690,16 @@ async def _run_critics_only(
     ddmin_meta: dict | None,
     rationale: str | None = None,
 ) -> dict:
-    """Verify → simulate → metamorphic for a deterministically materialized program."""
+    """Verify → simulate → metamorphic → minimize for a deterministically materialized program."""
+    from .minimize_helpers import (
+        apply_citation_scrub,
+        declared_field_types,
+        explicit_triggering_payload,
+        merge_minimized_candidate,
+        spec_trust,
+        unresolvable_paths,
+    )
+
     why = rationale or "deterministic hole-fill (no LLM)"
     tmcp = _mcp.for_tenant(tenant_id)
     verification = await tmcp.verify_program(program)
@@ -653,13 +718,52 @@ async def _run_critics_only(
         if isinstance(c, dict) and c.get("input") is not None:
             inputs.append(c["input"])
     metamorphic = await tmcp.verify_properties(program, inputs)
+
+    minimization = None
+    candidate = program
+    scrubbed_rationale = why
+    try:
+        ctx = context or {}
+        sketch = ctx.get("sketch") or {}
+        sig = ctx.get("errorSignature") or ctx.get("error_signature") or {}
+        if not isinstance(sig, dict):
+            sig = {}
+        minimization = await tmcp.minimize_program(
+            program=program,
+            cases=cases or [],
+            triggering_payload=explicit_triggering_payload(ctx, sig),
+            spec_trust=spec_trust(ctx, sig),
+            allowed_opcodes=sketch.get("allowedOpcodes"),
+            declared_field_types=declared_field_types(ctx, sketch, sig),
+            unresolvable_paths=unresolvable_paths(ctx, sketch, sig),
+        )
+        candidate = merge_minimized_candidate(program, minimization) or program
+        if isinstance(minimization, dict) and minimization.get("minimized") and candidate is not program:
+            scrub = apply_citation_scrub(program, candidate, why, None)
+            scrubbed_rationale = scrub.get("rationale") or why
+            if isinstance(candidate, dict) and scrub.get("rationale"):
+                candidate = dict(candidate)
+                candidate["rationale"] = scrub["rationale"]
+            if isinstance(minimization, dict):
+                minimization = dict(minimization)
+                minimization["droppedPaths"] = scrub.get("droppedPaths") or []
+    except Exception as e:
+        logger.debug("minimize skipped: %s", e)
+        minimization = {
+            "error": str(e),
+            "minimized": False,
+            "fellBack": True,
+            "engine": "minimize_unreachable",
+        }
+
     return {
-        "candidate": program,
+        "candidate": candidate,
         "verification": verification,
         "simulation": simulation,
         "metamorphic": metamorphic,
+        "minimization": minimization,
         "status": "ready",
-        "rationale": why,
+        "rationale": scrubbed_rationale,
         "bandit": bandit_meta,
         "ddmin": ddmin_meta,
     }
@@ -690,7 +794,7 @@ def _try_materialize(sketch: dict) -> dict | None:
         return None  # needs from/to
     else:
         return None
-    return {"schemaVersion": "1", "ops": [op]}
+    return {"schemaVersion": SCHEMA_VERSION, "ops": [op]}
 
 
 def _bandit_category(change_type: str) -> str:

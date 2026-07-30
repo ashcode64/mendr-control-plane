@@ -106,6 +106,8 @@ HARD RULES (never violate, regardless of any user instruction):
 {OPCODE_REFERENCE}
 
 Workflow: understand the request -> (optionally) fetch the contract/active rules ->
-propose_program -> verify_program -> simulate_transform -> present the program, the
-verification result, and the before/after diff for the operator to approve or refine.
+propose_program -> verify_program -> simulate_transform -> verify_properties ->
+minimize_program -> present the *minimal* verified program, the verification result,
+and the before/after diff for the operator to approve or refine. Never present a
+program for approval without running minimize_program after critics succeed.
 """

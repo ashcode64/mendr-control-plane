@@ -49,6 +49,11 @@ mendr:
     fallback-to-default: ${MENDR_TENANCY_FALLBACK_TO_DEFAULT:true}
   metamorphic:
     fuzz-count: ${MENDR_METAMORPHIC_FUZZ_COUNT:256}
+  minimize:
+    enabled: ${MENDR_MINIMIZE_ENABLED:true}
+    base-url: ${MENDR_MINIMIZE_BASE_URL:http://mendr-minimize:8099}
+    spec-trust-gate: ${MENDR_MINIMIZE_SPEC_TRUST_GATE:0.85}
+    prove-max-ops: ${MENDR_MINIMIZE_PROVE_MAX_OPS:8}
   auth:
     # When true every request must present a WorkOS JWT or per-tenant API key.
     enforce: ${MENDR_AUTH_ENFORCE:false}

@@ -1,0 +1,57 @@
+name: mendr-minimize
+
+on:
+  push:
+    branches: [master, "feat/**"]
+    paths:
+      - "mendr-minimize/**"
+      - ".github/workflows/mendr-minimize.yml"
+  pull_request:
+    paths:
+      - "mendr-minimize/**"
+      - ".github/workflows/mendr-minimize.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mendr-minimize
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: mendr-minimize
+      - name: Ensure Cargo.lock present
+        run: test -f Cargo.lock
+      - name: cargo test
+        run: cargo test --locked
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+  docker:
+    name: docker build image
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build mendr-minimize image
+        run: docker build -t mendr/mendr-minimize:ci ./mendr-minimize
+      - name: Smoke health endpoint
+        run: |
+          docker run -d --name mm -p 18099:8099 mendr/mendr-minimize:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18099/health; then
+              docker rm -f mm
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs mm || true
+          docker rm -f mm
+          exit 1

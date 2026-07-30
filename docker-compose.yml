@@ -30,6 +30,7 @@ services:
       # Service topology graph (SCD2 edges) + zero-hallucination RCA store (auto-applies on fresh volumes;
       # existing volumes: psql -U admin -d selfhealing < infra/init_v14_service_topology.sql)
       - ./infra/init_v14_service_topology.sql:/docker-entrypoint-initdb.d/init_v14_service_topology.sql
+      - ./infra/init_v15_minimization_pairs.sql:/docker-entrypoint-initdb.d/init_v15_minimization_pairs.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s
@@ -99,6 +100,8 @@ services:
       SERVICES_RULE_ENGINE: http://rule-engine:8084
       MENDR_DOCKER_HOST_REWRITE: host.docker.internal
       GATEWAY_INTERNAL_API_KEY: ${GATEWAY_INTERNAL_API_KEY:-}
+      MENDR_MINIMIZE_BASE_URL: ${MENDR_MINIMIZE_BASE_URL:-http://mendr-minimize:8099}
+      MENDR_MINIMIZE_ENABLED: ${MENDR_MINIMIZE_ENABLED:-true}
       # Auth (off by default for incremental rollout). Set JWKS URI to enable WorkOS JWT.
       MENDR_AUTH_ENFORCE: ${MENDR_AUTH_ENFORCE:-false}
       MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
@@ -111,6 +114,22 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      mendr-minimize:
+        condition: service_started
+
+  mendr-minimize:
+    build: ./mendr-minimize
+    image: mendr/mendr-minimize:latest
+    ports:
+      - "8099:8099"
+    environment:
+      MENDR_MINIMIZE_BIND: 0.0.0.0:8099
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8099/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   ai-analysis-service:
     build: ./ai-analysis-service

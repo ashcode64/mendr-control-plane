@@ -178,6 +178,26 @@ public class ContextToolExecutor {
                                     "description", "Optional seed payloads for metamorphic fuzz (offline only)",
                                     "items", Map.of("type", "object"))),
                     List.of("program")),
+            toolDef("minimize_program",
+                    "Deterministic remediation minimization (Rust ddmin+eqsat+prove_minimal, Java re-verify). "
+                            + "Call AFTER verify/simulate/metamorphic succeed and BEFORE presenting a program for approval. "
+                            + "Returns the minimal equivalent AST (or the draft if re-verify fails / no improvement).",
+                    Map.of(
+                            "program", objProp("Verified MendrScript AST {schemaVersion, ops:[...]}"),
+                            "cases", Map.of("type", "array",
+                                    "description", "Simulation cases [{input, expected?}]",
+                                    "items", Map.of("type", "object")),
+                            "triggeringPayload", Map.of("type", "object",
+                                    "description", "Exact incident payload (twin gate 2 for schema-gated coerce removal)"),
+                            "specTrust", Map.of("type", "number",
+                                    "description", "0..1 contract trust (twin gate 1)"),
+                            "allowedOpcodes", Map.of("type", "array", "items", Map.of("type", "string"),
+                                    "description", "Optional sketch opcode allowlist"),
+                            "declaredFieldTypes", Map.of("type", "object",
+                                    "description", "JSON-pointer → declared OpenAPI type for twin-gated coerce removal"),
+                            "unresolvablePaths", Map.of("type", "array", "items", Map.of("type", "string"),
+                                    "description", "oneOf/anyOf / polymorphic pointers — necessity never drops ops on these")),
+                    List.of("program")),
             toolDef("localize_fields",
                     "Delta-debug (ddmin) multi-field drift with bifurcated oracle: "
                             + "SCHEMA_MISMATCH→offline simulate; RFC 9110 safe methods "
@@ -298,6 +318,7 @@ public class ContextToolExecutor {
                 case "verify_properties" -> mendrScriptGatewayClient.verifyProperties(Map.of(
                         "program", input == null ? Map.of() : input.getOrDefault("program", Map.of()),
                         "inputs", input == null ? List.of() : input.getOrDefault("inputs", List.of())));
+                case "minimize_program" -> minimizeProgram(input);
                 case "localize_fields" -> localizeFields(input);
                 case "select_bandit_arms" -> selectBanditArms(input);
                 case "register_local_program" -> registerLocalProgram(input);
@@ -805,8 +826,69 @@ public class ContextToolExecutor {
     }
 
     @SuppressWarnings("unchecked")
-    private Object localizeFields(Map<String, Object> input) {
-        return ddminOracleService.localize(input == null ? Map.of() : input);
+    private Object minimizeProgram(Map<String, Object> input) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (input == null) input = Map.of();
+        body.put("program", input.getOrDefault("program", Map.of()));
+        body.put("cases", input.getOrDefault("cases", List.of()));
+        if (input.get("triggeringPayload") != null) {
+            body.put("triggeringPayload", input.get("triggeringPayload"));
+        }
+        if (input.get("specTrust") instanceof Number n) {
+            body.put("specTrust", n.doubleValue());
+        }
+        if (input.get("allowedOpcodes") instanceof List<?> list) {
+            body.put("allowedOpcodes", list);
+        }
+            if (input.get("declaredFieldTypes") instanceof Map<?, ?> types) {
+            Map<String, String> declared = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : types.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null) {
+                    declared.put(e.getKey().toString(), e.getValue().toString());
+                }
+            }
+            if (!declared.isEmpty()) {
+                body.put("declaredFieldTypes", declared);
+            }
+        }
+        if (input.get("unresolvablePaths") instanceof List<?> list) {
+            List<String> paths = new ArrayList<>();
+            for (Object o : list) {
+                if (o != null) paths.add(o.toString());
+            }
+            if (!paths.isEmpty()) {
+                body.put("unresolvablePaths", paths);
+            }
+        }
+        Map<String, Object> result = mendrScriptGatewayClient.minimize(body);
+        // Best-effort preference-pair capture when op count shrinks (DPO training deferred).
+        Object origCount = result.get("originalOpCount");
+        Object finalCount = result.get("finalOpCount");
+        boolean sizesDiffer = origCount instanceof Number o && finalCount instanceof Number f
+                && o.intValue() > f.intValue();
+        if (Boolean.TRUE.equals(result.get("minimized")) && sizesDiffer && result.get("preferencePair") != null) {
+            try {
+                Object pair = result.get("preferencePair");
+                Map<?, ?> pairMap = pair instanceof Map<?, ?> m ? m : Map.of();
+                java.util.UUID tenantId = com.selfhealing.analysis.tenant.TenantContext.currentOrDefault();
+                jdbcTemplate.update("""
+                    INSERT INTO minimization_preference_pairs
+                        (tenant_id, chosen_program, rejected_program, layers, meta)
+                    VALUES (?::uuid, ?::jsonb, ?::jsonb, ?::jsonb, ?::jsonb)
+                    """,
+                        tenantId,
+                        objectMapper.writeValueAsString(pairMap.get("chosen")),
+                        objectMapper.writeValueAsString(pairMap.get("rejected")),
+                        objectMapper.writeValueAsString(result.getOrDefault("layersApplied", List.of())),
+                        objectMapper.writeValueAsString(Map.of(
+                                "originalOpCount", result.get("originalOpCount"),
+                                "finalOpCount", result.get("finalOpCount"),
+                                "engine", String.valueOf(result.get("engine")))));
+            } catch (Exception e) {
+                log.debug("preference pair capture skipped: {}", e.getMessage());
+            }
+        }
+        return result;
     }
 
     @SuppressWarnings("unchecked")

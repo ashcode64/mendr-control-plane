@@ -78,6 +78,29 @@ class McpClient:
             {"program": program, "inputs": inputs or []},
         )
 
+    async def minimize_program(
+        self,
+        program: dict,
+        cases: list | None = None,
+        triggering_payload: dict | None = None,
+        spec_trust: float | None = None,
+        allowed_opcodes: list | None = None,
+        declared_field_types: dict | None = None,
+        unresolvable_paths: list | None = None,
+    ) -> dict:
+        args: dict = {"program": program, "cases": cases or []}
+        if triggering_payload is not None:
+            args["triggeringPayload"] = triggering_payload
+        if spec_trust is not None:
+            args["specTrust"] = spec_trust
+        if allowed_opcodes:
+            args["allowedOpcodes"] = allowed_opcodes
+        if declared_field_types:
+            args["declaredFieldTypes"] = declared_field_types
+        if unresolvable_paths:
+            args["unresolvablePaths"] = unresolvable_paths
+        return await self.call_tool("minimize_program", args)
+
     async def localize_fields(self, **kwargs) -> dict:
         return await self.call_tool("localize_fields", {k: v for k, v in kwargs.items() if v is not None})
 

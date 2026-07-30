@@ -1,9 +1,9 @@
 """LangGraph synthesis loop: load_context -> propose -> verify -> (simulate | refine)
--> metamorphic -> present.
+-> metamorphic -> minimize -> present.
 
 The graph is the orchestration spine. It has NO deploy node by construction — the
-terminal `present` node hands the verified program + simulation back to the operator,
-who approves through the existing control-plane flow.
+terminal `present` node hands the verified (and minimized) program + simulation back
+to the operator, who approves through the existing control-plane flow.
 """
 from __future__ import annotations
 
@@ -14,6 +14,14 @@ from langgraph.graph import END, StateGraph
 from .config import settings
 from .llm import Proposer
 from .mcp_client import McpClient
+from .minimize_helpers import (
+    apply_citation_scrub as _apply_citation_scrub,
+    declared_field_types as _declared_field_types,
+    explicit_triggering_payload as _explicit_triggering_payload,
+    merge_minimized_candidate as _merge_minimized_candidate,
+    spec_trust as _spec_trust,
+    unresolvable_paths as _unresolvable_paths,
+)
 
 
 class GraphState(TypedDict, total=False):
@@ -28,6 +36,7 @@ class GraphState(TypedDict, total=False):
     verification: Optional[dict]
     simulation: Optional[dict]
     metamorphic: Optional[dict]
+    minimization: Optional[dict]
     iterations: int
     prior_errors: list
     status: str
@@ -112,6 +121,58 @@ def build_graph(proposer: Proposer, mcp: McpClient):
             pass
         return {"metamorphic": report, "status": status}
 
+    async def minimize(state: GraphState) -> dict:
+        """Remediation minimization — after critics, before present/approval."""
+        cand = state.get("candidate")
+        if not cand or not (state.get("verification") or {}).get("valid"):
+            return {}
+        ctx = state.get("context") or {}
+        sketch = ctx.get("sketch") or {}
+        sig = ctx.get("errorSignature") or ctx.get("error_signature") or {}
+        if not isinstance(sig, dict):
+            sig = {}
+        triggering = _explicit_triggering_payload(ctx, sig)
+        spec_trust = _spec_trust(ctx, sig)
+        try:
+            report = await mcp.for_tenant(state.get("tenant_id")).minimize_program(
+                program=cand,
+                cases=state.get("cases") or [],
+                triggering_payload=triggering,
+                spec_trust=spec_trust,
+                allowed_opcodes=sketch.get("allowedOpcodes"),
+                declared_field_types=_declared_field_types(ctx, sketch, sig),
+                unresolvable_paths=_unresolvable_paths(ctx, sketch, sig),
+            )
+        except Exception as e:
+            return {
+                "minimization": {
+                    "error": str(e),
+                    "minimized": False,
+                    "fellBack": True,
+                    "engine": "minimize_unreachable",
+                },
+                "notes": list(state.get("notes") or []) + ["minimize_soft_fail"],
+            }
+        merged = _merge_minimized_candidate(cand, report)
+        out: dict = {"candidate": merged, "minimization": report}
+        if report.get("minimized") and merged is not None and merged is not cand:
+            scrub = _apply_citation_scrub(
+                cand, merged, state.get("rationale"), state.get("assistant_text")
+            )
+            if scrub.get("rationale") is not None:
+                out["rationale"] = scrub["rationale"]
+                if isinstance(merged, dict):
+                    merged = dict(merged)
+                    merged["rationale"] = scrub["rationale"]
+                    out["candidate"] = merged
+            if scrub.get("assistant_text") is not None:
+                out["assistant_text"] = scrub["assistant_text"]
+            if isinstance(out.get("minimization"), dict):
+                mm = dict(out["minimization"])
+                mm["droppedPaths"] = scrub.get("droppedPaths") or []
+                out["minimization"] = mm
+        return out
+
     async def present(state: GraphState) -> dict:
         if not state.get("candidate"):
             return {"status": "no_program"}
@@ -136,6 +197,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     g.add_node("verify", verify)
     g.add_node("simulate", simulate)
     g.add_node("metamorphic", metamorphic)
+    g.add_node("minimize", minimize)
     g.add_node("present", present)
 
     g.set_entry_point("load_context")
@@ -144,6 +206,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     g.add_conditional_edges("verify", after_verify,
                             {"simulate": "simulate", "propose": "propose", "present": "present"})
     g.add_edge("simulate", "metamorphic")
-    g.add_edge("metamorphic", "present")
+    g.add_edge("metamorphic", "minimize")
+    g.add_edge("minimize", "present")
     g.add_edge("present", END)
     return g.compile()

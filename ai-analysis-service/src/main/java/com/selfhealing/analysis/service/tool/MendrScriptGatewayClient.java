@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -43,6 +44,23 @@ public class MendrScriptGatewayClient {
         return post("/api/internal/mendrscript/verify-properties", verifyPropertiesRequest);
     }
 
+    public Map<String, Object> minimize(Object minimizeRequest) {
+        Map<String, Object> result = post("/api/internal/mendrscript/minimize", minimizeRequest);
+        // Normalize verify-shaped transport errors into the minimize response contract.
+        if (result != null && result.containsKey("valid") && !result.containsKey("program")) {
+            return Map.of(
+                    "program", minimizeRequest instanceof Map<?, ?> m
+                            ? m.getOrDefault("program", Map.of()) : Map.of(),
+                    "minimized", false,
+                    "layersApplied", List.of(),
+                    "fellBack", true,
+                    "engine", "gateway_unreachable",
+                    "errors", result.getOrDefault("errors", List.of("gateway unreachable"))
+            );
+        }
+        return result;
+    }
+
     @SuppressWarnings("unchecked")
     private Map<String, Object> post(String path, Object body) {
         try {
@@ -52,10 +70,21 @@ public class MendrScriptGatewayClient {
                     .bodyValue(body == null ? Map.of() : body)
                     .retrieve()
                     .bodyToMono(Map.class)
-                    .timeout(Duration.ofSeconds(10))
+                    .timeout(Duration.ofSeconds(30))
                     .block();
         } catch (Exception e) {
             log.warn("MendrScript gateway call {} failed: {}", path, e.getMessage());
+            if (path != null && path.endsWith("/minimize")) {
+                Object program = body instanceof Map<?, ?> m ? m.get("program") : Map.of();
+                return Map.of(
+                        "program", program == null ? Map.of() : program,
+                        "minimized", false,
+                        "layersApplied", List.of(),
+                        "fellBack", true,
+                        "engine", "gateway_unreachable",
+                        "errors", List.of("gateway unreachable: " + e.getMessage())
+                );
+            }
             return Map.of("valid", false, "errors", java.util.List.of("gateway unreachable: " + e.getMessage()));
         }
     }

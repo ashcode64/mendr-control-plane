@@ -1,9 +1,10 @@
 """FastAPI entrypoint for the MendrScript conversation engine.
 
 Exposes an SSE chat endpoint that runs the synthesis graph and streams progress
-(propose -> verify -> simulate -> present) to the UI in the AI Analysis tab. The
-final event carries the verified program, the verification result, and the
-before/after simulation diff. There is intentionally no deploy endpoint.
+(propose -> verify -> simulate -> metamorphic -> minimize -> present) to the UI
+in the AI Analysis tab. The final event carries the verified (and minimized)
+program, verification, simulation, and minimization report. There is intentionally
+no deploy endpoint.
 
 Security posture (defense-in-depth, all outside the model):
   - CORS locked to the configured dashboard origin(s) (never "*").
@@ -92,6 +93,8 @@ class DiagnoseRequest(BaseModel):
     cases: list | None = None
     complexity: dict | None = None
     priorTurns: list | None = None
+    triggeringPayload: dict | None = None
+    specTrust: float | None = None
 
 
 @app.get("/health")
@@ -182,6 +185,8 @@ async def diagnose(
             complexity=req.complexity,
             tenant_id=principal.tenant_id,
             prior_turns=req.priorTurns,
+            triggering_payload=req.triggeringPayload,
+            spec_trust=req.specTrust,
         )
         audit.info(
             "diagnose.result tenant=%s principal=%s status=%s category=%s",
@@ -286,6 +291,8 @@ async def chat_stream(
             "assistantText": assistant_text,
             "verification": last.get("verification"),
             "simulation": last.get("simulation"),
+            "metamorphic": last.get("metamorphic"),
+            "minimization": last.get("minimization"),
             "model": settings.active_llm_model,
             "securityFlags": flags,
             "deployable": deployable,

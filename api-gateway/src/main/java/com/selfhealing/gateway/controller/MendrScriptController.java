@@ -4,6 +4,7 @@ import com.selfhealing.gateway.transform.dsl.MendrProgram;
 import com.selfhealing.gateway.transform.dsl.MendrScriptVerifier;
 import com.selfhealing.gateway.transform.dsl.MetamorphicPropertyVerifier;
 import com.selfhealing.gateway.transform.dsl.TransformSimulator;
+import com.selfhealing.gateway.transform.minimize.MinimizeProgramService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -12,6 +13,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Internal endpoints (guarded by {@code X-Internal-Api-Key}) that expose the
@@ -28,6 +30,7 @@ public class MendrScriptController {
     private final MendrScriptVerifier verifier;
     private final TransformSimulator simulator;
     private final MetamorphicPropertyVerifier metamorphicVerifier;
+    private final MinimizeProgramService minimizeProgramService;
 
     @PostMapping("/verify")
     public ResponseEntity<MendrScriptVerifier.VerificationResult> verify(@RequestBody MendrProgram program) {
@@ -58,5 +61,31 @@ public class MendrScriptController {
         }
         return ResponseEntity.ok(metamorphicVerifier.verifyProperties(
                 req.program(), req.inputs() == null ? List.of() : req.inputs()));
+    }
+
+    public record MinimizeHttpRequest(
+            MendrProgram program,
+            List<TransformSimulator.Case> cases,
+            Object triggeringPayload,
+            Double specTrust,
+            List<String> allowedOpcodes,
+            Map<String, String> declaredFieldTypes,
+            List<String> unresolvablePaths) {}
+
+    /**
+     * Deterministic remediation minimization (Rust search + Java re-verify).
+     * Returns the minimal program only when re-verify passes; otherwise the draft.
+     */
+    @PostMapping("/minimize")
+    public ResponseEntity<Map<String, Object>> minimize(@RequestBody MinimizeHttpRequest req) {
+        return ResponseEntity.ok(minimizeProgramService.minimize(
+                new MinimizeProgramService.MinimizeRequest(
+                        req.program(),
+                        req.cases(),
+                        req.triggeringPayload(),
+                        req.specTrust(),
+                        req.allowedOpcodes(),
+                        req.declaredFieldTypes(),
+                        req.unresolvablePaths())));
     }
 }

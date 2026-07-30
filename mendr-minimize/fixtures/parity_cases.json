@@ -1,0 +1,98 @@
+[
+  {
+    "name": "coalesce_present_null_only",
+    "notes": "Java MendrScriptExecutor coalesce: fire only when path EXISTS and is JSON null",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        { "op": "coalesce", "path": "/x", "value": "fallback" }
+      ]
+    },
+    "cases": [
+      { "input": { "x": null }, "expected": { "x": "fallback" } },
+      { "input": { "x": "keep" }, "expected": { "x": "keep" } },
+      { "input": {}, "expected": {} }
+    ]
+  },
+  {
+    "name": "set_path_nested_object",
+    "notes": "JsonPointers.setPath creates intermediate objects",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        { "op": "default", "path": "/a/b", "value": 1, "on": "missing" }
+      ]
+    },
+    "cases": [
+      { "input": {}, "expected": { "a": { "b": 1 } } }
+    ]
+  },
+  {
+    "name": "scale_numerator_denominator",
+    "notes": "Java/Lua: (value * numerator) / denominator",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        { "op": "scale", "path": "/n", "numerator": 1, "denominator": 100 }
+      ]
+    },
+    "cases": [
+      { "input": { "n": 250 }, "expected": { "n": 2.5 } }
+    ]
+  },
+  {
+    "name": "rename_preserves_value",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        { "op": "rename", "from": "/old", "to": "/new" }
+      ]
+    },
+    "cases": [
+      { "input": { "old": 1 }, "expected": { "new": 1 } }
+    ]
+  },
+  {
+    "name": "coerce_string_to_integer",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        { "op": "coerce", "path": "/n", "targetType": "integer" }
+      ]
+    },
+    "cases": [
+      { "input": { "n": "42" }, "expected": { "n": 42 } }
+    ]
+  },
+  {
+    "name": "wrap_unwrap_roundtrip",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        { "op": "wrap", "key": "data" },
+        { "op": "unwrap", "key": "data" }
+      ]
+    },
+    "cases": [
+      { "input": { "a": 1 }, "expected": { "a": 1 } }
+    ]
+  },
+  {
+    "name": "conditional_eq_predicate",
+    "program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "conditional",
+          "predicate": { "eq": ["/flag", true] },
+          "then": [{ "op": "default", "path": "/x", "value": 1, "on": "missing" }],
+          "otherwise": []
+        }
+      ]
+    },
+    "cases": [
+      { "input": { "flag": true }, "expected": { "flag": true, "x": 1 } },
+      { "input": { "flag": false }, "expected": { "flag": false } }
+    ]
+  }
+]
