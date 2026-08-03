@@ -1,49 +1,79 @@
 package com.selfhealing.analysis.service;
 
 import com.selfhealing.analysis.model.AnalysisResult;
+import com.selfhealing.analysis.observability.MendrErrorSemantics;
+import com.selfhealing.analysis.service.safety.ConformalCalibrationService;
+import com.selfhealing.analysis.service.safety.ConformalDecision;
+import com.selfhealing.analysis.service.safety.SafetyGateResult;
+import com.selfhealing.analysis.service.safety.SafetyGateService;
+import com.selfhealing.analysis.service.safety.SafetyScore;
 import com.selfhealing.analysis.service.tool.AnalysisToolResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 
+/**
+ * HITL / diagnose interpretation tests. Approval status is owned by {@link SafetyGateService}
+ * (not a verbalized confidence threshold).
+ */
 class AiAnalysisServiceHitlStatusTest {
+
+    private SafetyGateService gate;
+
+    @BeforeEach
+    void setUp() {
+        ConformalCalibrationService calibration = mock(ConformalCalibrationService.class);
+        MendrErrorSemantics metrics = mock(MendrErrorSemantics.class);
+        gate = new SafetyGateService(calibration, metrics);
+        ReflectionTestUtils.setField(gate, "autoApplyEnabled", false);
+        ReflectionTestUtils.setField(gate, "vaMaxWidth", 0.25);
+        ReflectionTestUtils.setField(gate, "debateEnabled", false);
+        doReturn(new ConformalDecision(false, 0.01, true, "t", 0.5, 0.05, true))
+                .when(calibration).decide(any());
+    }
+
+    private static SafetyScore narrow() {
+        return new SafetyScore(0.9, 0.9, 1.0, 0.9, 0.9, 0.9, 0.9, 0.05,
+                0.95, 0.4, 0.5, 0.45, 0.10, true);
+    }
 
     @Test
     void refuseAutoHealForcesPendingApprovalEvenWhenValidationFails() {
-        assertThat(AiAnalysisService.resolveApprovalStatus(
-                true, true, false, false, 0.1, 0.75))
-                .isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+        SafetyGateResult r = gate.evaluate(true, true, false, false, true, narrow());
+        assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
     }
 
     @Test
     void refuseAutoHealForcesPendingApprovalEvenWhenNoOpEffect() {
-        assertThat(AiAnalysisService.resolveApprovalStatus(
-                true, false, false, false, 0.99, 0.75))
-                .isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+        SafetyGateResult r = gate.evaluate(true, false, false, false, true, narrow());
+        assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
     }
 
     @Test
     void refuseAutoHealForcesPendingApprovalWhenRoutingUndeployable() {
-        assertThat(AiAnalysisService.resolveApprovalStatus(
-                true, false, true, true, 0.99, 0.75))
-                .isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+        SafetyGateResult r = gate.evaluate(true, false, true, true, true, narrow());
+        assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
     }
 
     @Test
     void withoutHitlRejectsOnValidationFailure() {
-        assertThat(AiAnalysisService.resolveApprovalStatus(
-                false, true, false, true, 0.99, 0.75))
-                .isEqualTo(AnalysisResult.AnalysisStatus.REJECTED);
+        SafetyGateResult r = gate.evaluate(false, true, false, true, false, narrow());
+        assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.REJECTED);
     }
 
     @Test
-    void withoutHitlApprovesWhenDeployableAndAboveThreshold() {
-        assertThat(AiAnalysisService.resolveApprovalStatus(
-                false, false, false, true, 0.9, 0.75))
-                .isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+    void withoutHitlDeployableIsPendingWhenAutoApplyOff() {
+        SafetyGateResult r = gate.evaluate(false, false, false, true, false, narrow());
+        assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+        assertThat(r.conformal().autoEligible()).isTrue();
     }
 
     @Test
@@ -79,10 +109,8 @@ class AiAnalysisServiceHitlStatusTest {
         assertThat(result.rootCause()).contains("HITL required");
         assertThat(result.suggestedPermanentFix()).contains("do not auto-heal");
 
-        // End-to-end status with the extracted flags
-        assertThat(AiAnalysisService.resolveApprovalStatus(
-                true, true, false, false, result.confidence(), 0.75))
-                .isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+        SafetyGateResult status = gate.evaluate(true, true, false, false, true, narrow());
+        assertThat(status.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
     }
 
     @Test
@@ -97,6 +125,7 @@ class AiAnalysisServiceHitlStatusTest {
         body.put("owner_action_required", true);
         body.put("confidence", 0.4);
         body.put("simulation", Map.of("results", java.util.List.of()));
+        body.put("tokenLogprobs", java.util.List.of(-0.1, -0.2, -0.15));
 
         AnalysisToolResult result = AiAnalysisService.interpretDiagnoseResponse(body);
         assertThat(result).isNotNull();
@@ -104,6 +133,7 @@ class AiAnalysisServiceHitlStatusTest {
         assertThat(result.transformationRules()).containsEntry("type", "DSL_PROGRAM");
         assertThat(result.transformationRules()).containsEntry("_refuseAutoHeal", true);
         assertThat(result.transformationRules()).containsKey("_simulation");
+        assertThat(result.transformationRules()).containsKey("_tokenLogprobs");
     }
 
     @Test

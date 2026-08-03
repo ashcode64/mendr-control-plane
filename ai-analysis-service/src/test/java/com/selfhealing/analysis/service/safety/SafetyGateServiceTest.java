@@ -23,6 +23,8 @@ class SafetyGateServiceTest {
         MendrErrorSemantics metrics = mock(MendrErrorSemantics.class);
         gate = new SafetyGateService(calibration, metrics);
         ReflectionTestUtils.setField(gate, "autoApplyEnabled", false);
+        ReflectionTestUtils.setField(gate, "vaMaxWidth", 0.25);
+        ReflectionTestUtils.setField(gate, "debateEnabled", false);
 
         doAnswer(inv -> {
             SafetyScore s = inv.getArgument(0);
@@ -33,31 +35,12 @@ class SafetyGateServiceTest {
             return new ConformalDecision(abstain, 0.01, !abstain, "test", 0.35,
                     s.nonconformityScore(), true);
         }).when(calibration).decide(any());
-
-        doAnswer(inv -> {
-            double conf = inv.getArgument(0);
-            double det = inv.getArgument(1);
-            double meta = inv.getArgument(2);
-            double trust = inv.getArgument(3);
-            double prec = inv.getArgument(4);
-            SafetyScore partial = new SafetyScore(conf, det, meta, trust, prec, 0);
-            double nc = new LogisticNonconformityModel(
-                    LogisticNonconformityModel.DEFAULT_WEIGHTS,
-                    LogisticNonconformityModel.DEFAULT_BIAS, "t")
-                    .predictFailureProbability(partial.nonconformityFeatures());
-            return new SafetyScore(conf, det, meta, trust, prec, nc);
-        }).when(calibration).score(
-                org.mockito.ArgumentMatchers.anyDouble(),
-                org.mockito.ArgumentMatchers.anyDouble(),
-                org.mockito.ArgumentMatchers.anyDouble(),
-                org.mockito.ArgumentMatchers.anyDouble(),
-                org.mockito.ArgumentMatchers.anyDouble());
     }
 
     @Test
     void refuseAlwaysPendingEvenWhenAutoEligible() {
         ReflectionTestUtils.setField(gate, "autoApplyEnabled", true);
-        SafetyScore score = new SafetyScore(0.95, 0.95, 1.0, 0.9, 0.9, 0.05);
+        SafetyScore score = narrowScore(0.05);
         doReturn(new ConformalDecision(false, 0.01, true, "t", 0.5, 0.05, true))
                 .when(calibration).decide(any());
         SafetyGateResult r = gate.evaluate(true, false, false, true, false, score);
@@ -67,15 +50,27 @@ class SafetyGateServiceTest {
 
     @Test
     void conformalAbstainIsPending() {
-        SafetyScore score = new SafetyScore(0.4, 0.3, 0.2, 0.3, 0.3, 0.8);
+        SafetyScore score = narrowScore(0.8);
         SafetyGateResult r = gate.evaluate(false, false, false, true, false, score);
         assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
         assertThat(r.conformal().abstain()).isTrue();
     }
 
     @Test
+    void wideVennAbersForcesPendingEvenWhenConformalAccepts() {
+        ReflectionTestUtils.setField(gate, "vaMaxWidth", 0.25);
+        SafetyScore score = new SafetyScore(0.95, 0.95, 1.0, 0.9, 0.9, 0.9, 0.9, 0.05,
+                0.95, 0.1, 0.9, 0.55, 0.80, true);
+        doReturn(new ConformalDecision(false, 0.01, true, "t", 0.5, 0.05, true))
+                .when(calibration).decide(any());
+        SafetyGateResult r = gate.evaluate(false, false, false, true, false, score);
+        assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.PENDING_APPROVAL);
+        assertThat(r.metadataExtras().get("safetyGateReason")).isEqualTo("vennAbersWideInterval");
+    }
+
+    @Test
     void acceptWithAutoApplyOffIsPendingAutoEligible() {
-        SafetyScore score = new SafetyScore(0.95, 0.95, 1.0, 0.9, 0.9, 0.05);
+        SafetyScore score = narrowScore(0.05);
         doReturn(new ConformalDecision(false, 0.01, true, "t", 0.5, 0.05, true))
                 .when(calibration).decide(any());
         SafetyGateResult r = gate.evaluate(false, false, false, true, false, score);
@@ -86,7 +81,7 @@ class SafetyGateServiceTest {
     @Test
     void acceptWithAutoApplyOnIsApproved() {
         ReflectionTestUtils.setField(gate, "autoApplyEnabled", true);
-        SafetyScore score = new SafetyScore(0.95, 0.95, 1.0, 0.9, 0.9, 0.05);
+        SafetyScore score = narrowScore(0.05);
         doReturn(new ConformalDecision(false, 0.01, true, "t", 0.5, 0.05, true))
                 .when(calibration).decide(any());
         SafetyGateResult r = gate.evaluate(false, false, false, true, false, score);
@@ -95,10 +90,16 @@ class SafetyGateServiceTest {
 
     @Test
     void validationFailureRejectsWithoutHitl() {
-        SafetyScore score = new SafetyScore(0.95, 0.95, 1.0, 0.9, 0.9, 0.05);
+        SafetyScore score = narrowScore(0.05);
         doReturn(new ConformalDecision(false, 0.01, true, "t", 0.5, 0.05, true))
                 .when(calibration).decide(any());
         SafetyGateResult r = gate.evaluate(false, true, false, true, false, score);
         assertThat(r.status()).isEqualTo(AnalysisResult.AnalysisStatus.REJECTED);
+    }
+
+    private static SafetyScore narrowScore(double nc) {
+        double raw = 1.0 - nc;
+        return new SafetyScore(0.95, 0.95, 1.0, 0.9, 0.9, 0.9, 0.9, nc,
+                raw, raw - 0.02, raw + 0.02, raw, 0.04, true);
     }
 }

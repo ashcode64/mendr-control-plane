@@ -38,6 +38,17 @@ public class AnalysisResult implements TenantScoped {
     @Column(name = "confidence", columnDefinition = "numeric")
     private Double confidence;
 
+    /** Venn-Abers point estimate (may equal {@link #confidence} when fitted). */
+    @Column(name = "calibrated_confidence", columnDefinition = "numeric")
+    private Double calibratedConfidence;
+
+    /** Epistemic interval width p1 − p0. */
+    @Column(name = "confidence_interval_width", columnDefinition = "numeric")
+    private Double confidenceIntervalWidth;
+
+    @Column(name = "venn_abers_fitted")
+    private Boolean vennAbersFitted;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "transformation_rules", columnDefinition = "jsonb")
     private Map<String, Object> transformationRules;

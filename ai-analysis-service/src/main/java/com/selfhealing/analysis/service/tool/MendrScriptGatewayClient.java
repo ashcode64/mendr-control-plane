@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -48,15 +49,19 @@ public class MendrScriptGatewayClient {
         Map<String, Object> result = post("/api/internal/mendrscript/minimize", minimizeRequest);
         // Normalize verify-shaped transport errors into the minimize response contract.
         if (result != null && result.containsKey("valid") && !result.containsKey("program")) {
-            return Map.of(
-                    "program", minimizeRequest instanceof Map<?, ?> m
-                            ? m.getOrDefault("program", Map.of()) : Map.of(),
-                    "minimized", false,
-                    "layersApplied", List.of(),
-                    "fellBack", true,
-                    "engine", "gateway_unreachable",
-                    "errors", result.getOrDefault("errors", List.of("gateway unreachable"))
-            );
+            Object fallbackProgram = Map.of();
+            if (minimizeRequest instanceof Map<?, ?> m) {
+                Object p = m.get("program");
+                fallbackProgram = p instanceof Map<?, ?> ? p : Map.of();
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("program", fallbackProgram);
+            out.put("minimized", false);
+            out.put("layersApplied", List.of());
+            out.put("fellBack", true);
+            out.put("engine", "gateway_unreachable");
+            out.put("errors", result.getOrDefault("errors", List.of("gateway unreachable")));
+            return out;
         }
         return result;
     }

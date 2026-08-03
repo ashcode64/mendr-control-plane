@@ -61,6 +61,19 @@ public class MendrErrorSemantics {
         }
     }
 
+    /** Selective prediction: human-review (wide VA) vs conformal abstain vs auto-eligible. */
+    public void recordSelectivePrediction(boolean wideInterval, boolean conformalAbstain, boolean autoEligible) {
+        try {
+            String outcome = wideInterval ? "human_wide_va"
+                    : conformalAbstain ? "human_conformal"
+                    : autoEligible ? "auto_eligible" : "pending_review";
+            meterRegistry.counter("mendr.confidence.selective",
+                    "outcome", outcome).increment();
+        } catch (Exception e) {
+            log.trace("metrics skip: {}", e.getMessage());
+        }
+    }
+
     public Timer.Sample startDiagnose() {
         return Timer.start(meterRegistry);
     }

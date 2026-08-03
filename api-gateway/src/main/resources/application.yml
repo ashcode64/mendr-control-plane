@@ -65,7 +65,6 @@ mendr:
 gateway:
   rules:
     cache-ttl-seconds: 60
-    confidence-threshold: 0.75
   sync:
     outbox-enabled: true
     outbox-poll-interval-ms: 3000

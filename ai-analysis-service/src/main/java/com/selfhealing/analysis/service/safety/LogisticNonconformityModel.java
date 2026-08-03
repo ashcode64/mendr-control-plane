@@ -3,16 +3,25 @@ package com.selfhealing.analysis.service.safety;
 import java.util.Arrays;
 
 /**
- * Logistic regressor for nonconformity: σ(w·x + b). Default weights are a
- * conservative cold-start bootstrap until {@link ConformalCalibrationJob} retrains
- * from ≥ {@code mendr.conformal.min-train-n} labeled outcomes.
- * Opaque / XGBoost scoring is gated behind {@code mendr.conformal.allow-opaque-model}
- * and requires a SHAP/explanation export path — this class remains the audit default.
+ * Logistic regressor for nonconformity: σ(w·x + b).
+ *
+ * <p>Feature order (length 7) — plan Layer-1 mapping:
+ * <pre>
+ *   0  1−s₁ generationConfidence (logprobs | cluster | verbalized)
+ *   1  1−s₂ deterministicAgreement
+ *   2  1−s₃ metamorphicPassRate
+ *   3  1−specTrust (contract)
+ *   4  1−s₄ precedentQuality (Wilson/Laplace)
+ *   5  1−s₆ semanticConsistency
+ *   6  1−s₅ causalVerification
+ * </pre>
+ * s₇ debate is flag-gated and not part of this vector.
  */
 public final class LogisticNonconformityModel implements NonconformityModel {
 
-    /** Features: 1-conf, 1-detAgree, 1-meta, 1-specTrust */
-    public static final double[] DEFAULT_WEIGHTS = {1.2, 0.9, 1.1, 0.8};
+    public static final int FEATURE_DIM = 7;
+
+    public static final double[] DEFAULT_WEIGHTS = {1.2, 0.9, 1.1, 0.8, 0.7, 0.6, 1.0};
     public static final double DEFAULT_BIAS = -1.5;
 
     private final double[] weights;
@@ -25,9 +34,7 @@ public final class LogisticNonconformityModel implements NonconformityModel {
     }
 
     public LogisticNonconformityModel(double[] weights, double bias, String version, String kind) {
-        this.weights = weights == null || weights.length == 0
-                ? Arrays.copyOf(DEFAULT_WEIGHTS, DEFAULT_WEIGHTS.length)
-                : Arrays.copyOf(weights, weights.length);
+        this.weights = normalizeWeights(weights);
         this.bias = Double.isNaN(bias) ? DEFAULT_BIAS : bias;
         this.version = version == null || version.isBlank() ? "bootstrap-v0" : version;
         this.kind = kind == null ? "logistic" : kind;
@@ -35,6 +42,14 @@ public final class LogisticNonconformityModel implements NonconformityModel {
 
     public static LogisticNonconformityModel bootstrap() {
         return new LogisticNonconformityModel(DEFAULT_WEIGHTS, DEFAULT_BIAS, "bootstrap-v0");
+    }
+
+    static double[] normalizeWeights(double[] weights) {
+        double[] out = Arrays.copyOf(DEFAULT_WEIGHTS, FEATURE_DIM);
+        if (weights == null || weights.length == 0) return out;
+        int n = Math.min(weights.length, FEATURE_DIM);
+        System.arraycopy(weights, 0, out, 0, n);
+        return out;
     }
 
     @Override

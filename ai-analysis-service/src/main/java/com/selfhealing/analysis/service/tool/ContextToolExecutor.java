@@ -825,6 +825,10 @@ public class ContextToolExecutor {
         }
     }
 
+    private Object localizeFields(Map<String, Object> input) {
+        return ddminOracleService.localize(input == null ? Map.of() : input);
+    }
+
     @SuppressWarnings("unchecked")
     private Object minimizeProgram(Map<String, Object> input) {
         Map<String, Object> body = new LinkedHashMap<>();

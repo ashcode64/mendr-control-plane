@@ -17,16 +17,58 @@ const S = {
   td: { padding: '13px 16px', color: 'var(--text-secondary)', verticalAlign: 'middle', fontSize: '13px' },
 };
 
-function ConfBar({ value }) {
+function confEpistemics(item) {
+  const meta = analysisMeta(item);
+  const ss = meta.safetyScore && typeof meta.safetyScore === 'object' ? meta.safetyScore : {};
+  const width = item?.confidenceIntervalWidth ?? meta.intervalWidth ?? ss.intervalWidth;
+  const fitted = item?.vennAbersFitted ?? meta.vennAbersFitted ?? ss.vennAbersFitted;
+  const p0 = typeof ss.p0 === 'number' ? ss.p0 : (typeof meta.p0 === 'number' ? meta.p0 : null);
+  const p1 = typeof ss.p1 === 'number' ? ss.p1 : (typeof meta.p1 === 'number' ? meta.p1 : null);
+  return {
+    value: item?.confidence ?? ss.calibratedConfidence ?? 0,
+    width: typeof width === 'number' ? width : null,
+    fitted: fitted === true,
+    p0,
+    p1,
+  };
+}
+
+function ConfBar({ value, width, fitted, p0, p1 }) {
   const color = confColor(value);
+  const widthPct = width != null ? Math.round(Math.min(1, Math.max(0, width)) * 100) : null;
+  const lo = p0 != null ? Math.round(p0 * 100) : null;
+  const hi = p1 != null ? Math.round(p1 * 100) : null;
   return (
     <div>
       <div style={{ fontSize: '12px', color, fontWeight: 600, marginBottom: '4px' }}>
         {Math.round(value * 100)}% <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>({confLabel(value)})</span>
+        {fitted ? (
+          <span style={{
+            marginLeft: 6, fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+            color: '#10e88a', background: 'rgba(16,232,138,0.1)', border: '1px solid rgba(16,232,138,0.25)',
+            borderRadius: 3, padding: '1px 5px', verticalAlign: 'middle',
+          }}>VA</span>
+        ) : (
+          <span style={{
+            marginLeft: 6, fontSize: 10, fontWeight: 600, letterSpacing: '0.04em',
+            color: 'var(--text-muted)', background: 'var(--bg-hover)', border: '1px solid var(--border)',
+            borderRadius: 3, padding: '1px 5px', verticalAlign: 'middle',
+          }}>raw</span>
+        )}
       </div>
       <div style={{ height: '4px', borderRadius: '2px', background: 'var(--bg-hover)', overflow: 'hidden', width: '100px' }}>
         <div style={{ height: '100%', borderRadius: '2px', background: color, width: `${value * 100}%`, transition: 'width 0.6s ease' }} />
       </div>
+      {fitted && (lo != null && hi != null) && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3, fontFamily: 'var(--font-mono)' }}>
+          [{lo}%, {hi}%]{widthPct != null ? ` · width ${widthPct}%` : ''}
+        </div>
+      )}
+      {!fitted && widthPct != null && (
+        <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+          unfitted · width {widthPct}%
+        </div>
+      )}
     </div>
   );
 }
@@ -461,7 +503,7 @@ function AnalysisDetail({ item, onApprove, onReject, onClose, onStaged }) {
         {/* Status + confidence */}
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '20px' }}>
           <Badge status={item.status} />
-          <ConfBar value={item.confidence ?? 0} />
+          <ConfBar {...confEpistemics(item)} />
         </div>
 
         <HitlBanners item={item} />
@@ -664,7 +706,7 @@ export default function Analysis({ onApproval }) {
                         {item.rootCause}
                       </div>
                     </td>
-                    <td style={S.td}><ConfBar value={item.confidence ?? 0} /></td>
+                    <td style={S.td}><ConfBar {...confEpistemics(item)} /></td>
                     <td style={S.td}><Badge status={item.status} /></td>
                     <td style={S.td}>{timeAgo(item.analyzedAt)}</td>
                     <td style={S.td}>

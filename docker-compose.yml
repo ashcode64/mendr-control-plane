@@ -31,6 +31,9 @@ services:
       # existing volumes: psql -U admin -d selfhealing < infra/init_v14_service_topology.sql)
       - ./infra/init_v14_service_topology.sql:/docker-entrypoint-initdb.d/init_v14_service_topology.sql
       - ./infra/init_v15_minimization_pairs.sql:/docker-entrypoint-initdb.d/init_v15_minimization_pairs.sql
+      # Confidence scoring calibrated columns (existing volumes:
+      # psql -U admin -d selfhealing < infra/init_v16_confidence_calibration.sql)
+      - ./infra/init_v16_confidence_calibration.sql:/docker-entrypoint-initdb.d/init_v16_confidence_calibration.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s

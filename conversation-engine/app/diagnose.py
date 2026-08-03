@@ -26,6 +26,66 @@ _mcp = McpClient()
 _graph = build_graph(_proposer, _mcp)
 
 
+def _provisional_confidence(
+    *,
+    ready: bool,
+    refuse: bool,
+    verification: Any,
+    simulation: Any,
+    metamorphic: Any,
+    verified_candidates: Any,
+) -> float:
+    """Evidence-based provisional score for CE → AIS. AIS replaces with Venn-Abers pVa.
+
+    Never returns a hardcoded 0.9 for "ready". Combines verify/simulate/metamorphic
+    and resample cluster agreement when available.
+    """
+    if refuse:
+        return 0.40
+    if not ready:
+        return 0.35
+
+    signals: list[float] = []
+
+    from .critics_outcome import critic_ok as _ok
+
+    v = _ok(verification)
+    if v is not None:
+        signals.append(0.95 if v else 0.25)
+    s = _ok(simulation)
+    if s is not None:
+        signals.append(0.90 if s else 0.30)
+
+    if isinstance(metamorphic, dict):
+        rate = metamorphic.get("passRate")
+        if isinstance(rate, (int, float)):
+            signals.append(max(0.0, min(1.0, float(rate))))
+        else:
+            passed = metamorphic.get("passed")
+            total = metamorphic.get("total")
+            if isinstance(passed, (int, float)) and isinstance(total, (int, float)) and total > 0:
+                signals.append(max(0.0, min(1.0, float(passed) / float(total))))
+
+    # Resample agreement: fraction of verified candidates that share the modal program shape.
+    if isinstance(verified_candidates, list) and len(verified_candidates) >= 2:
+        shapes: dict[str, int] = {}
+        for item in verified_candidates:
+            prog = None
+            if isinstance(item, dict):
+                prog = item.get("program") if isinstance(item.get("program"), dict) else item
+            if isinstance(prog, dict):
+                key = str(sorted((k, str(prog.get(k))) for k in ("ops", "type", "renames") if k in prog))
+                shapes[key] = shapes.get(key, 0) + 1
+        if shapes:
+            n = sum(shapes.values())
+            win = max(shapes.values())
+            signals.append(win / n if n else 0.5)
+
+    if not signals:
+        return 0.55
+    return max(0.0, min(1.0, sum(signals) / len(signals)))
+
+
 def _should_diagnose_first(complexity: dict | None, signature: dict) -> bool:
     complexity = complexity or {}
     if complexity.get("deterministicDiff"):
@@ -411,7 +471,14 @@ async def run_diagnose(
             "sketch": sketch,
             "diagnosis": diagnosis,
             "templateMeta": template_meta,
-            "confidence": 0.35,
+            "confidence": _provisional_confidence(
+                ready=False,
+                refuse=True,
+                verification=None,
+                simulation=None,
+                metamorphic=None,
+                verified_candidates=verified_candidates,
+            ),
             "deployable": False,
             "refuseAutoHeal": True,
             "owner_action_required": True,
@@ -473,6 +540,32 @@ async def run_diagnose(
     ))
     ready = status == "ready"
 
+    # Merge program-shaped resamples for s₆/s₁ (REx arms + winner). Keep ddmin probes too.
+    verified_candidates = _merge_program_candidates(
+        verified_candidates,
+        last.get("programCandidates"),
+        last.get("candidate"),
+    )
+
+    provisional = _provisional_confidence(
+        ready=ready,
+        refuse=refuse,
+        verification=last.get("verification"),
+        simulation=last.get("simulation"),
+        metamorphic=last.get("metamorphic"),
+        verified_candidates=verified_candidates,
+    )
+    # s₁: prefer provider token logprobs on the winning program when present.
+    token_logprobs = None
+    cand = last.get("candidate")
+    if isinstance(cand, dict):
+        token_logprobs = cand.get("tokenLogprobs") or cand.get("_tokenLogprobs")
+        if token_logprobs is None and cand.get("_s1LogprobConfidence") is not None:
+            token_logprobs = cand.get("_s1LogprobConfidence")
+    from .generation_confidence import resolve_s1
+    s1_score, s1_source = resolve_s1(logprobs=token_logprobs, verbalized=provisional)
+    confidence_out = provisional if s1_score is None else s1_score
+
     # Additive, gated: a verified+cited topology RCA narrative (never gates the heal).
     rca_narrative: dict | None = None
     if settings.rca_narrative_enabled:
@@ -482,7 +575,7 @@ async def run_diagnose(
         except Exception as e:
             logger.debug("rca narrative skipped: %s", e)
 
-    return {
+    out = {
         "status": status,
         "program": last.get("candidate"),
         "rationale": last.get("rationale"),
@@ -500,7 +593,8 @@ async def run_diagnose(
         "sketch": sketch,
         "diagnosis": diagnosis,
         "templateMeta": template_meta,
-        "confidence": (0.4 if refuse else 0.9) if ready else 0.4,
+        "confidence": confidence_out,
+        "generationConfidenceSource": s1_source,
         "deployable": ready and not refuse,
         "refuseAutoHeal": refuse,
         "owner_action_required": bool(diagnosis and diagnosis.get("owner_action_required")),
@@ -508,6 +602,49 @@ async def run_diagnose(
         "lagEvidence": list((diagnosis or {}).get("lagEvidence") or []) if diagnosis else [],
         "rcaNarrative": rca_narrative,
     }
+    if token_logprobs is not None:
+        out["tokenLogprobs"] = token_logprobs
+    return out
+
+
+def _merge_program_candidates(
+    existing: list | None,
+    program_candidates: Any,
+    winner: Any,
+) -> list:
+    """Ensure verifiedCandidates include {program: ...} entries for semantic clustering."""
+    out: list = list(existing) if isinstance(existing, list) else []
+    seen: set[str] = set()
+
+    def _key(prog: dict) -> str:
+        try:
+            ops = prog.get("ops")
+            return str(("ops", ops if ops is not None else prog.get("type")))
+        except Exception:
+            return str(id(prog))
+
+    def _add(prog: Any, meta: dict | None = None) -> None:
+        if not isinstance(prog, dict):
+            return
+        if not (prog.get("ops") is not None or prog.get("type") or prog.get("renames")):
+            return
+        k = _key(prog)
+        if k in seen:
+            return
+        seen.add(k)
+        entry = {"program": prog, "causally_verified": True}
+        if meta:
+            entry.update(meta)
+        out.append(entry)
+
+    if isinstance(program_candidates, list):
+        for item in program_candidates:
+            if isinstance(item, dict) and isinstance(item.get("program"), dict):
+                _add(item["program"], {k: v for k, v in item.items() if k != "program"})
+            else:
+                _add(item)
+    _add(winner, {"winner": True})
+    return out
 
 
 async def _true_rex_diversity(
@@ -527,6 +664,7 @@ async def _true_rex_diversity(
     ])
     session_id = bandit_meta.get("sessionId")
     registered = 0
+    program_candidates: list[dict] = []
 
     for arm in arms[:3]:
         cat = arm.get("category")
@@ -554,8 +692,11 @@ async def _true_rex_diversity(
         if success and cases:
             try:
                 sim = await tmcp.simulate_transform(program, cases)
-                if isinstance(sim, dict) and sim.get("ok") is False:
-                    success = False
+                if isinstance(sim, dict):
+                    if sim.get("ok") is False:
+                        success = False
+                    elif "faulted" in sim or "mismatched" in sim:
+                        success = int(sim.get("faulted") or 0) == 0 and int(sim.get("mismatched") or 0) == 0
             except Exception:
                 pass
         if not success:
@@ -594,6 +735,11 @@ async def _true_rex_diversity(
         except Exception as e:
             logger.debug("diversity minimize failed — skipping arm: %s", e)
             continue
+        entry: dict[str, Any] = {
+            "program": program,
+            "banditCategory": coerced,
+            "causally_verified": True,
+        }
         try:
             reg = await tmcp.call_tool("register_local_program", {
                 "sessionId": session_id,
@@ -602,11 +748,19 @@ async def _true_rex_diversity(
             })
         except Exception as e:
             logger.debug("register_local_program failed: %s", e)
+            # Still keep for s₆/s₁ even when bandit register fails.
+            if isinstance(program, dict):
+                program_candidates.append(entry)
             continue
         if not (reg or {}).get("registered"):
+            if isinstance(program, dict):
+                program_candidates.append(entry)
             continue
         local_arm_id = ((reg or {}).get("arm") or {}).get("localArmId")
         registered += 1
+        if isinstance(program, dict):
+            entry["localArmId"] = local_arm_id
+            program_candidates.append(entry)
         # Observe local posterior on the minimized, critic-passed arm
         try:
             await tmcp.call_tool("observe_local_bandit", {
@@ -639,6 +793,7 @@ async def _true_rex_diversity(
             last["status"] = "unverifiable"
             last["rationale"] = "bandit_category aborted (invalid/missing tag)"
             last["candidate"] = None
+            last["programCandidates"] = program_candidates
             return last
         if enforced is not None:
             last["candidate"] = enforced
@@ -649,6 +804,14 @@ async def _true_rex_diversity(
             bm["engaged"] = False
             bm.pop("localArmId", None)
             last["bandit"] = bm
+            if isinstance(enforced, dict):
+                program_candidates.append({
+                    "program": enforced,
+                    "banditCategory": coerced,
+                    "causally_verified": True,
+                    "graphFallback": True,
+                })
+        last["programCandidates"] = program_candidates
         return last
 
     pick = await tmcp.call_tool("pick_local_bandit", {"sessionId": session_id})
@@ -659,6 +822,7 @@ async def _true_rex_diversity(
             "rationale": "True REx: no local program arms survived",
             "bandit": bandit_meta,
             "ddmin": ddmin_meta,
+            "programCandidates": program_candidates,
         }
 
     program = (pick or {}).get("program")
@@ -674,6 +838,7 @@ async def _true_rex_diversity(
         program, context, cases, tenant_id, bm, ddmin_meta, rationale
     )
     last["bandit"] = bm
+    last["programCandidates"] = program_candidates
     if isinstance(last.get("candidate"), dict) and category:
         cand = dict(last["candidate"])
         cand["bandit_category"] = category

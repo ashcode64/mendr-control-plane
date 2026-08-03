@@ -40,6 +40,13 @@ public class ConformalCalibrationJob {
     @Value("${mendr.conformal.cross-tenant-train:false}")
     private boolean crossTenantTrain;
 
+    /** When true, refuse to activate a fit that fails Phase-E calibrationGuard. */
+    @Value("${mendr.conformal.require-calibration-guard:true}")
+    private boolean requireCalibrationGuard;
+
+    @Value("${mendr.conformal.calibration-guard-min-eval-n:20}")
+    private int calibrationGuardMinEvalN;
+
     @Scheduled(fixedDelayString = "${mendr.conformal.retrain-ms:3600000}")
     public void retrain() {
         try {
@@ -131,6 +138,22 @@ public class ConformalCalibrationJob {
             ConformalCalibrationService.FittedCalibration fitted =
                     calibrationService.fitAndCalibrate(examples, riskBudget, version);
 
+            Object guardObj = fitted.weightsJson().get("calibrationGuard");
+            int evalN = fitted.weightsJson().get("evalN") instanceof Number n ? n.intValue() : 0;
+            boolean guardPassed = true;
+            if (guardObj instanceof Map<?, ?> g) {
+                guardPassed = !Boolean.FALSE.equals(g.get("passed"));
+            }
+            if (requireCalibrationGuard && evalN >= calibrationGuardMinEvalN && !guardPassed) {
+                log.warn("conformal retrain refused for tenant={} — calibrationGuard failed evalN={} guard={}",
+                        tenantId, evalN, guardObj);
+                return false;
+            }
+            if (!guardPassed) {
+                log.warn("conformal calibrationGuard failed (publishing anyway; evalN={} < min {}): {}",
+                        evalN, calibrationGuardMinEvalN, guardObj);
+            }
+
             if (tenantId == null) {
                 jdbcTemplate.update("""
                     UPDATE conformal_calibration SET active = false
@@ -176,10 +199,14 @@ public class ConformalCalibrationJob {
     private ConformalCalibrationService.LabeledExample toExample(Map<String, Object> row) {
         boolean failed = "FAILURE".equalsIgnoreCase(String.valueOf(row.get("outcome")))
                 || Boolean.TRUE.equals(row.get("recurred"));
-        double conf = row.get("confidence") instanceof Number n ? n.doubleValue() : 0.5;
+        // Never use ar.confidence (may be calibrated pVa) — that would leak the label's score.
+        double conf = 0.5;
         double spec = row.get("spec_trust") instanceof Number n ? n.doubleValue() : 0.5;
         double det = 0.7;
         double meta = 0.7;
+        double prec = 0.5;
+        double semantic = 0.5;
+        double causal = 0.5;
         Object am = row.get("analysis_metadata");
         if (am != null) {
             try {
@@ -194,12 +221,26 @@ public class ConformalCalibrationJob {
                     if (scoreMap.get("metamorphicPassRate") instanceof Number n) {
                         meta = n.doubleValue();
                     }
-                    if (scoreMap.get("modelConfidence") instanceof Number n) {
+                    if (scoreMap.get("generationConfidence") instanceof Number n) {
+                        conf = n.doubleValue();
+                    } else if (scoreMap.get("modelConfidence") instanceof Number n) {
                         conf = n.doubleValue();
                     }
                     if (scoreMap.get("specTrust") instanceof Number n) {
                         spec = n.doubleValue();
                     }
+                    if (scoreMap.get("precedentQuality") instanceof Number n) {
+                        prec = n.doubleValue();
+                    }
+                    if (scoreMap.get("semanticConsistency") instanceof Number n) {
+                        semantic = n.doubleValue();
+                    }
+                    if (scoreMap.get("causalVerification") instanceof Number n) {
+                        causal = n.doubleValue();
+                    }
+                }
+                if (metaMap.get("precedentQuality") instanceof Number n) {
+                    prec = n.doubleValue();
                 }
             } catch (Exception ignored) {
                 // keep defaults
@@ -209,7 +250,10 @@ public class ConformalCalibrationJob {
                 1.0 - conf,
                 1.0 - det,
                 1.0 - meta,
-                1.0 - spec
+                1.0 - spec,
+                1.0 - prec,
+                1.0 - semantic,
+                1.0 - causal
         };
         return new ConformalCalibrationService.LabeledExample(features, failed);
     }

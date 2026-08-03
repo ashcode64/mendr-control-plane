@@ -46,7 +46,7 @@ class AnthropicProposerBackend:
                 f"and re-propose: {prior_errors}")
         messages.append({"role": "user", "content": "\n\n".join(user_blocks)})
 
-        resp = await self._client.messages.create(
+        create_kwargs = dict(
             model=settings.anthropic_model,
             max_tokens=settings.max_tokens,
             system=SYSTEM_PROMPT,
@@ -54,6 +54,13 @@ class AnthropicProposerBackend:
             tool_choice={"type": "tool", "name": "propose_program"},
             messages=messages,
         )
+        # Prefer token logprobs for s₁ when the provider/SDK accepts them.
+        try:
+            resp = await self._client.messages.create(**create_kwargs, logprobs=True, top_logprobs=0)
+        except TypeError:
+            resp = await self._client.messages.create(**create_kwargs)
+        except Exception:
+            resp = await self._client.messages.create(**create_kwargs)
 
         text_parts, program = [], None
         for block in resp.content:
@@ -62,4 +69,21 @@ class AnthropicProposerBackend:
             elif block.type == "tool_use" and block.name == "propose_program":
                 program = dict(block.input)
                 program.setdefault("schemaVersion", SCHEMA_VERSION)
+        # Attach provider logprobs onto the program for AIS s₁ when available.
+        try:
+            from .generation_confidence import extract_from_response, from_logprobs
+            lp_score = extract_from_response(resp)
+            if lp_score is None:
+                lp_score = from_logprobs(getattr(resp, "logprobs", None))
+            if program is not None and lp_score is not None:
+                program["_s1LogprobConfidence"] = lp_score
+                # Also keep raw token logprobs when SDK exposes a list-shaped payload.
+                raw_lp = getattr(resp, "logprobs", None)
+                if raw_lp is not None:
+                    program["tokenLogprobs"] = raw_lp if isinstance(raw_lp, (list, dict)) else {
+                        "meanLogProb": None,
+                        "confidence": lp_score,
+                    }
+        except Exception:
+            pass
         return program, " ".join(text_parts).strip()

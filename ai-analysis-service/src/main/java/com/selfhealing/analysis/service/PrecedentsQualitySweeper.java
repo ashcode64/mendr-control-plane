@@ -2,6 +2,7 @@ package com.selfhealing.analysis.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.service.bandit.BanditService;
+import com.selfhealing.analysis.service.safety.WilsonScore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -190,15 +191,8 @@ public class PrecedentsQualitySweeper {
 
     /** Public for unit tests and quality lifecycle callers. */
     public static WilsonInterval wilson(int successes, int n, double z) {
-        if (n <= 0) return new WilsonInterval(0, 1);
-        double phat = (double) successes / n;
-        double z2 = z * z;
-        double denom = 1.0 + z2 / n;
-        double centre = phat + z2 / (2.0 * n);
-        double margin = z * Math.sqrt((phat * (1.0 - phat) + z2 / (4.0 * n)) / n);
-        double lower = (centre - margin) / denom;
-        double upper = (centre + margin) / denom;
-        return new WilsonInterval(Math.max(0, lower), Math.min(1, upper));
+        WilsonScore.Interval i = WilsonScore.interval(successes, n, z);
+        return new WilsonInterval(i.lower(), i.upper());
     }
 
     private double readMetaDim(Object analysisId, String scoreKey, double fallback) {

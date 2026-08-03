@@ -8,6 +8,12 @@ import com.selfhealing.analysis.service.context.StructuredFailureContext;
 import com.selfhealing.analysis.service.safety.SafetyGateResult;
 import com.selfhealing.analysis.service.safety.SafetyGateService;
 import com.selfhealing.analysis.service.safety.SafetyScore;
+import com.selfhealing.analysis.service.safety.BehavioralClusterer;
+import com.selfhealing.analysis.service.safety.CanonicalAstHasher;
+import com.selfhealing.analysis.service.safety.CausalVerification;
+import com.selfhealing.analysis.service.safety.DeterministicAgreement;
+import com.selfhealing.analysis.service.safety.GenerationConfidence;
+import com.selfhealing.analysis.service.safety.SemanticEntropy;
 import com.selfhealing.analysis.service.tool.AnalysisToolResult;
 import com.selfhealing.analysis.service.tool.MendrScriptGatewayClient;
 import lombok.RequiredArgsConstructor;
@@ -50,10 +56,7 @@ public class AiAnalysisService {
     private final LearningTraceWriter      learningTraceWriter;
     private final com.selfhealing.analysis.service.safety.PrecedentQualityScorer precedentQualityScorer;
     private final MendrScriptGatewayClient mendrScriptGatewayClient;
-
-    /** Legacy fallback only — Safety Gate / conformal owns the approval boundary. */
-    @Value("${anthropic.confidence-threshold:0.75}")
-    private double confidenceThreshold;
+    private final BehavioralClusterer behavioralClusterer;
 
     @Value("${mendr.conversation.diagnose-url:}")
     private String diagnoseUrl;
@@ -189,7 +192,6 @@ public class AiAnalysisService {
         String rootCause = toolResult.rootCause();
         String permanentFix = toolResult.suggestedPermanentFix();
         double modelConfidence = toolResult.confidence();
-        double confidence = modelConfidence;
 
         transformationRules = harmonizeWithSchemaDiff(transformationRules, ctx.schemaDiff(), event.getFailureId());
         transformationRules = harmonizeWithResponseDiff(transformationRules, ctx.responseDiff(), event.getFailureId());
@@ -203,7 +205,9 @@ public class AiAnalysisService {
         // (diagnose already minimized; re-minimize is idempotent when already minimal).
         transformationRules = minimizeDslProgramIfPresent(transformationRules, ctx, signature);
 
-        confidence = calibrateConfidence(confidence, modelConfidence, transformationRules, ctx);
+        // s₁: prefer token logprobs when present; else cluster frequency; else verbalized.
+        // Graded s₂ (DeterministicAgreement) + Venn-Abers replace legacy confidence floors.
+        double verbalizedConfidence = modelConfidence;
 
         RuleValidator.ValidationResult validation = RuleValidator.validate(
                 transformationRules, event, ctx.upstreamAllowedOrigins(), event.getRequestPayload());
@@ -213,8 +217,7 @@ public class AiAnalysisService {
         }
 
         // Deterministic effect preview: a restructure rule that cannot change the
-        // failing payload is an ineffective suggestion. Surface it — SafetyGate
-        // rejects non-effective suggestions without the old confidenceThreshold clamp.
+        // failing payload is an ineffective suggestion. SafetyGate rejects no-ops.
         RuleValidator.EffectPreview effect = RuleValidator.describeEffect(
                 transformationRules, event.getRequestPayload());
         if (!effect.effective()) {
@@ -252,20 +255,41 @@ public class AiAnalysisService {
         Object metamorphicMeta = transformationRules.remove("_metamorphic");
         Object ddminMeta = transformationRules.remove("_ddmin");
         Object banditMeta = transformationRules.remove("_bandit");
+        Object verifiedCandidatesMeta = transformationRules.remove("_verifiedCandidates");
+        Object tokenLogprobsMeta = transformationRules.remove("_tokenLogprobs");
+        transformationRules.remove("_generationConfidenceSource");
         if (simulationMeta != null) meta.put("simulation", simulationMeta);
         if (verificationMeta != null) meta.put("verification", verificationMeta);
         if (lagEvidenceMeta != null) meta.put("lagEvidence", lagEvidenceMeta);
         if (metamorphicMeta != null) meta.put("metamorphic", metamorphicMeta);
         if (ddminMeta != null) meta.put("ddmin", ddminMeta);
         if (banditMeta != null) meta.put("bandit", banditMeta);
+        if (verifiedCandidatesMeta != null) meta.put("verifiedCandidates", verifiedCandidatesMeta);
+        if (tokenLogprobsMeta != null) meta.put("tokenLogprobs", tokenLogprobsMeta);
         if (signature != null) {
             meta.put("spec_trust", signature.specTrust());
         }
 
         Double metamorphicPassRate = extractMetamorphicPassRate(metamorphicMeta);
-        double deterministicAgreement = (!validationFailed && effect.effective() && !routingUndeployable)
-                ? Math.max(modelConfidence, 0.85)
-                : 0.35;
+        boolean deployableSignals = !validationFailed && effect.effective() && !routingUndeployable;
+        Map<String, Object> detRules = deterministicRulesMap(ctx);
+        boolean hasDeterministic = detRules != null && !detRules.isEmpty();
+        double deterministicAgreement = DeterministicAgreement.scoreFromRules(
+                transformationRules, detRules, hasDeterministic, deployableSignals);
+
+        List<Map<String, Object>> simCases = buildSimulateCases(ctx);
+        double semanticConsistency = extractSemanticConsistency(
+                transformationRules, verifiedCandidatesMeta, simCases);
+        double clusterFreq = extractWinningClusterFrequency(
+                transformationRules, verifiedCandidatesMeta, simCases);
+        Object logprobsMeta = GenerationConfidence.extractMeta(transformationRules, meta);
+        GenerationConfidence.Resolved s1 = GenerationConfidence.resolve(
+                logprobsMeta, clusterFreq, verbalizedConfidence);
+        double generationConfidence = s1.value();
+        meta.put("generationConfidenceSource", s1.source());
+        meta.put("s1FromLogprobs", s1.fromLogprobs());
+        double causalVerification = CausalVerification.score(verificationMeta, simulationMeta);
+
         boolean hitlReview = refuseAutoHeal
                 || "HITL_REVIEW".equals(toolResult.ruleType());
         String endpoint = event.getEndpoint();
@@ -275,22 +299,36 @@ public class AiAnalysisService {
                 endpoint);
         meta.put("precedentQuality", precedentQuality);
         SafetyScore safetyScore = safetyGateService.buildScore(
-                modelConfidence,
+                generationConfidence,
                 deterministicAgreement,
                 metamorphicPassRate,
                 signature != null ? signature.specTrust() : null,
-                precedentQuality);
+                precedentQuality,
+                semanticConsistency,
+                causalVerification);
         SafetyGateResult gate = safetyGateService.evaluate(
                 refuseAutoHeal, validationFailed, routingUndeployable, effect.effective(),
                 hitlReview, safetyScore);
         gate.mergeInto(meta);
+        // First-class calibrated fields for CE/UI (also inside safetyScore).
+        meta.put("pVa", safetyScore.pVa());
+        meta.put("p0", safetyScore.p0());
+        meta.put("p1", safetyScore.p1());
+        meta.put("intervalWidth", safetyScore.intervalWidth());
+        meta.put("vennAbersFitted", safetyScore.vennAbersFitted());
+        meta.put("rawCorrectProbability", safetyScore.rawCorrectProbability());
 
         AnalysisResult.AnalysisStatus status = gate.status();
+        // Display: pVa when fitted, else rawCorrectProbability (never bootstrap 0.5).
+        double confidence = safetyScore.displayConfidence();
 
         AnalysisResult result = AnalysisResult.builder()
                 .failureId(event.getFailureId())
                 .rootCause(rootCause)
                 .confidence(confidence)
+                .calibratedConfidence(safetyScore.pVa())
+                .confidenceIntervalWidth(safetyScore.intervalWidth())
+                .vennAbersFitted(safetyScore.vennAbersFitted())
                 .transformationRules(transformationRules)
                 .suggestedPermanentFix(permanentFix)
                 .aiModel(toolResult.model())
@@ -308,31 +346,6 @@ public class AiAnalysisService {
         return result;
     }
 
-    /**
-     * HITL refuse / owner_action flags always land in {@code PENDING_APPROVAL} so humans
-     * can review in the queue — even when validation, effect, or confidence would reject.
-     *
-     * @deprecated Prefer {@link SafetyGateService#evaluate}; retained for unit tests and
-     *             callers that lack a full SafetyScore.
-     */
-    @Deprecated
-    static AnalysisResult.AnalysisStatus resolveApprovalStatus(
-            boolean refuseAutoHeal,
-            boolean validationFailed,
-            boolean routingUndeployable,
-            boolean effectEffective,
-            double confidence,
-            double confidenceThreshold) {
-        if (refuseAutoHeal) {
-            return AnalysisResult.AnalysisStatus.PENDING_APPROVAL;
-        }
-        boolean approveEligible = !validationFailed && !routingUndeployable && effectEffective
-                && confidence >= confidenceThreshold;
-        return approveEligible
-                ? AnalysisResult.AnalysisStatus.PENDING_APPROVAL
-                : AnalysisResult.AnalysisStatus.REJECTED;
-    }
-
     @SuppressWarnings("unchecked")
     static Double extractMetamorphicPassRate(Object metamorphicMeta) {
         if (!(metamorphicMeta instanceof Map<?, ?> m)) return null;
@@ -344,6 +357,107 @@ public class AiAnalysisService {
             return p.doubleValue() / t.doubleValue();
         }
         return null;
+    }
+
+    static String expectedDeterministicType(FailureAnalysisContext ctx) {
+        Map<String, Object> rules = deterministicRulesMap(ctx);
+        if (rules == null || rules.isEmpty()) return null;
+        Object t = rules.get("type");
+        return t == null ? null : t.toString();
+    }
+
+    static Map<String, Object> deterministicRulesMap(FailureAnalysisContext ctx) {
+        if (ctx == null) return Map.of();
+        if (ctx.corsUpstreamDiff() != null && ctx.corsUpstreamDiff().hasDeterministicRule()) {
+            return ctx.corsUpstreamDiff().toTransformationRules();
+        }
+        if (ctx.corsEdgeDiff() != null && ctx.corsEdgeDiff().hasDeterministicRule()) {
+            return ctx.corsEdgeDiff().toTransformationRules();
+        }
+        if (ctx.schemaDiff() != null && ctx.schemaDiff().hasDeterministicRule()) {
+            return ctx.schemaDiff().toTransformationRules();
+        }
+        if (ctx.responseDiff() != null && ctx.responseDiff().hasDeterministicRule()) {
+            return ctx.responseDiff().toTransformationRules();
+        }
+        return Map.of();
+    }
+
+    double extractSemanticConsistency(
+            Map<String, Object> program,
+            Object verifiedCandidates,
+            List<Map<String, Object>> cases) {
+        List<Map<String, Object>> programs = collectCandidatePrograms(program, verifiedCandidates);
+        if (programs.size() < 2) return 0.5;
+        List<String> hashes = behavioralClusterer.clusterHashes(programs, cases);
+        return SemanticEntropy.consistency(hashes);
+    }
+
+    /**
+     * @return winning-cluster frequency in [0,1], or {@code -1} if insufficient / winner absent
+     */
+    double extractWinningClusterFrequency(
+            Map<String, Object> program,
+            Object verifiedCandidates,
+            List<Map<String, Object>> cases) {
+        List<Map<String, Object>> programs = collectCandidatePrograms(program, verifiedCandidates);
+        if (programs.size() < 2) return -1;
+        List<String> hashes = behavioralClusterer.clusterHashes(programs, cases);
+        if (hashes.isEmpty()) return -1;
+        // Selected program is always index 0 (see collectCandidatePrograms).
+        return SemanticEntropy.winningClusterFrequency(hashes, hashes.get(0));
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<Map<String, Object>> collectCandidatePrograms(
+            Map<String, Object> program, Object verifiedCandidates) {
+        List<Map<String, Object>> programs = new ArrayList<>();
+        if (verifiedCandidates instanceof List<?> list) {
+            for (Object item : list) {
+                Map<String, Object> prog = null;
+                if (item instanceof Map<?, ?> m) {
+                    Object p = m.get("program");
+                    if (p instanceof Map<?, ?> pm) {
+                        prog = (Map<String, Object>) pm;
+                    } else if (m.containsKey("ops") || m.containsKey("type")) {
+                        prog = (Map<String, Object>) m;
+                    }
+                }
+                if (prog != null && looksLikeProgram(prog)) {
+                    programs.add(prog);
+                }
+            }
+        }
+        // Always put the selected winner first so s₁ frequency is well-defined.
+        if (program != null && looksLikeProgram(program)) {
+            String winnerKey = CanonicalAstHasher.hashProgram(program);
+            programs.removeIf(p -> winnerKey.equals(CanonicalAstHasher.hashProgram(p)));
+            programs.add(0, program);
+        }
+        return programs;
+    }
+
+    private static boolean looksLikeProgram(Map<String, Object> prog) {
+        return prog.containsKey("ops") || prog.containsKey("type")
+                || prog.containsKey("renames") || prog.containsKey("defaults");
+    }
+
+    private List<Map<String, Object>> buildSimulateCases(FailureAnalysisContext ctx) {
+        List<Map<String, Object>> cases = new ArrayList<>();
+        try {
+            if (ctx != null && ctx.event() != null && ctx.event().getRequestPayload() != null) {
+                cases.add(Map.of("input", ctx.event().getRequestPayload()));
+            }
+            if (ctx != null && ctx.event() != null) {
+                Map<String, Object> resp = extractResponseForCases(ctx.event().getResponsePayload());
+                if (resp != null && !resp.isEmpty()) {
+                    cases.add(Map.of("input", resp));
+                }
+            }
+        } catch (Exception ignored) {
+            // empty cases → structural fallback in BehavioralClusterer
+        }
+        return cases;
     }
 
     /**
@@ -584,7 +698,7 @@ public class AiAnalysisService {
         String rationale = parsed.get("rationale") != null
                 ? parsed.get("rationale").toString()
                 : "Diagnosed via LangGraph verify/simulate loop";
-        double conf = parsed.get("confidence") instanceof Number n ? n.doubleValue() : (ready ? 0.85 : 0.4);
+        double conf = parsed.get("confidence") instanceof Number n ? n.doubleValue() : 0.5;
         String model = String.valueOf(parsed.getOrDefault("model", "conversation-engine"));
 
         if (refuseAutoHeal) {
@@ -615,6 +729,16 @@ public class AiAnalysisService {
         }
         if (parsed.get("bandit") != null) {
             rules.put("_bandit", parsed.get("bandit"));
+        }
+        if (parsed.get("verifiedCandidates") != null) {
+            rules.put("_verifiedCandidates", parsed.get("verifiedCandidates"));
+        }
+        // s₁ token logprobs when CE/provider exposed them — preferred over verbalized.
+        if (parsed.get("tokenLogprobs") != null) {
+            rules.put("_tokenLogprobs", parsed.get("tokenLogprobs"));
+        }
+        if (parsed.get("generationConfidenceSource") != null) {
+            rules.put("_generationConfidenceSource", parsed.get("generationConfidenceSource"));
         }
         Object diagnosis = parsed.get("diagnosis");
         if (diagnosis instanceof Map<?, ?> dmap) {
@@ -673,42 +797,6 @@ public class AiAnalysisService {
         Object raw = responsePayload.get("raw");
         if (raw instanceof Map<?, ?> m) return (Map<String, Object>) m;
         return responsePayload;
-    }
-
-    private double calibrateConfidence(
-            double effective,
-            double modelConfidence,
-            Map<String, Object> rules,
-            FailureAnalysisContext ctx) {
-
-        String aiType = str(rules.get("type")).toUpperCase();
-
-        if (ctx.corsUpstreamDiff().hasDeterministicRule()) {
-            String expected = "CORS_ORIGIN_OVERRIDE";
-            if (!expected.equals(aiType)) {
-                return Math.min(effective, 0.5);
-            }
-            return Math.max(effective, Math.max(modelConfidence, 0.9));
-        }
-        if (ctx.corsEdgeDiff().hasDeterministicRule()) {
-            String expected = "CORS_ALLOW";
-            if (!expected.equals(aiType)) {
-                return Math.min(effective, 0.5);
-            }
-            return Math.max(effective, Math.max(modelConfidence, 0.9));
-        }
-        if (ctx.schemaDiff().hasDeterministicRule()) {
-            // Verified MendrScript from /diagnose is an intentional alternative to
-            // the classic FIELD_RENAME/TYPE_COERCE map — do not penalize it.
-            if ("DSL_PROGRAM".equals(aiType)) {
-                return Math.max(effective, Math.max(modelConfidence, 0.85));
-            }
-            String expected = str(ctx.schemaDiff().toTransformationRules().get("type")).toUpperCase();
-            if (!expected.isBlank() && !expected.equals(aiType)) {
-                return Math.min(effective, 0.5);
-            }
-        }
-        return effective;
     }
 
     private Map<String, Object> harmonizeWithCorsUpstreamDiff(

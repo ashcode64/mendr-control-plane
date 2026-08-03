@@ -45,6 +45,14 @@ mendr:
     min-train-n: ${MENDR_CONFORMAL_MIN_TRAIN_N:500}
     cross-tenant-train: ${MENDR_CONFORMAL_CROSS_TENANT_TRAIN:false}
     retrain-ms: ${MENDR_CONFORMAL_RETRAIN_MS:3600000}
+    # Venn-Abers epistemic width: force human review when (p1-p0) exceeds this.
+    va-max-width: ${MENDR_CONFORMAL_VA_MAX_WIDTH:0.25}
+    # Refuse to activate fits that fail Phase-E ECE/AUROC ablation guard (when evalN ≥ min).
+    require-calibration-guard: ${MENDR_CONFORMAL_REQUIRE_CALIBRATION_GUARD:true}
+    calibration-guard-min-eval-n: ${MENDR_CONFORMAL_GUARD_MIN_EVAL_N:20}
+  confidence:
+    # s₇ multi-agent debate — stub only until implementation lands.
+    debate-enabled: ${MENDR_CONFIDENCE_DEBATE_ENABLED:false}
   metamorphic:
     fuzz-count: ${MENDR_METAMORPHIC_FUZZ_COUNT:256}
   ddmin:
@@ -159,7 +167,6 @@ anthropic:
   api-url: https://api.anthropic.com/v1/messages
   model: ${ANTHROPIC_MODEL:claude-haiku-4-5-20251001}
   max-tokens: 2000
-  confidence-threshold: 0.75
   agent-loop:
     max-turns: 3   # Tier-3 bounded agent loop: max read-only context-tool turns before a forced propose_* tool
 

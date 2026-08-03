@@ -2,12 +2,13 @@ package com.selfhealing.analysis.service.safety;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 /**
- * Computes {@code precedentQuality} for SafetyScore from dual-outcome memory:
- * TRUSTED/SUCCESS raise quality; REJECTED/FAILURE warn-offs lower it.
+ * Computes {@code precedentQuality} (s₄) for SafetyScore from dual-outcome memory.
+ * Uses Wilson lower bound once {@code n ≥ wilson-min-n}, else Laplace {@code (t+1)/(n+2)}.
  */
 @Slf4j
 @Service
@@ -15,6 +16,12 @@ import org.springframework.stereotype.Service;
 public class PrecedentQualityScorer {
 
     private final JdbcTemplate jdbcTemplate;
+
+    @Value("${mendr.quality.wilson-min-n:3}")
+    private int wilsonMinN;
+
+    @Value("${mendr.quality.wilson-z:1.96}")
+    private double wilsonZ;
 
     /**
      * @return quality in [0,1]; default 0.5 when no signal
@@ -42,18 +49,10 @@ public class PrecedentQualityScorer {
 
             int t = trusted == null ? 0 : trusted;
             int r = rejected == null ? 0 : rejected;
-            int n = t + r;
-            if (n == 0) return 0.5;
-            // Soften with prior: (t + 1) / (n + 2)
-            return clamp01((t + 1.0) / (n + 2.0));
+            return WilsonScore.quality(t, r, wilsonMinN, wilsonZ);
         } catch (Exception e) {
             log.debug("precedentQuality score skipped: {}", e.getMessage());
             return 0.5;
         }
-    }
-
-    private static double clamp01(double v) {
-        if (Double.isNaN(v) || Double.isInfinite(v)) return 0.5;
-        return Math.max(0.0, Math.min(1.0, v));
     }
 }
