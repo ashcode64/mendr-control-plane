@@ -1,7 +1,9 @@
 package com.selfhealing.gateway.service;
 
 import com.selfhealing.gateway.config.GatewayOpenRestyProperties;
+import com.selfhealing.gateway.model.ServiceInstance;
 import com.selfhealing.gateway.model.ServiceRegistration;
+import com.selfhealing.gateway.repository.ServiceInstanceRepository;
 import com.selfhealing.gateway.repository.ServiceRegistrationRepository;
 import com.selfhealing.gateway.model.ServiceContract;
 import com.selfhealing.gateway.repository.ServiceContractRepository;
@@ -37,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 public class ServiceRegistryService {
 
     private final ServiceRegistrationRepository serviceRepo;
+    private final ServiceInstanceRepository serviceInstanceRepository;
     private final ServiceContractRepository contractRepo;
     private final RedisTemplate<String, Object> redisTemplate;
     private final RestTemplate restTemplate;
@@ -292,6 +295,34 @@ public class ServiceRegistryService {
             }
             svc.setLastHealthCheck(LocalDateTime.now());
             serviceRepo.save(svc);
+
+            // Also update multi-instance pool members (edge reads healthStatus)
+            try {
+                List<ServiceInstance> instances =
+                        serviceInstanceRepository.findByServiceIdOrderByCreatedAtAsc(svc.getId());
+                for (ServiceInstance inst : instances) {
+                    if (!inst.isActive() && "EJECTED".equalsIgnoreCase(inst.getHealthStatus())) {
+                        continue;
+                    }
+                    String instUrl = DockerHostUrlRewriter.rewriteLocalHost(
+                            inst.getBaseUrl(), openRestyProperties.getDockerHostRewrite()) + healthPath;
+                    try {
+                        restTemplate.getForEntity(instUrl, String.class);
+                        inst.setHealthStatus("UP");
+                    } catch (Exception e) {
+                        inst.setHealthStatus("DOWN");
+                        log.warn("Instance health check failed for {} {}: {}",
+                                svc.getName(), inst.getBaseUrl(), e.getMessage());
+                    }
+                    inst.setLastHealthCheck(LocalDateTime.now());
+                    serviceInstanceRepository.save(inst);
+                }
+                if (!instances.isEmpty()) {
+                    routeChangedPublisher.publishTargetService(svc.getName());
+                }
+            } catch (Exception e) {
+                log.debug("Instance health checks skipped for {}: {}", svc.getName(), e.getMessage());
+            }
         }
     }
 }

@@ -40,6 +40,7 @@ class FailureIngestionServiceTest {
     @Mock private DnsProbeService dnsProbeService;
     @Mock private StringRedisTemplate stringRedisTemplate;
     @Mock private ValueOperations<String, String> valueOperations;
+    @Mock private UpstreamEjectionHealer upstreamEjectionHealer;
 
     private GatewayInternalProperties internalProperties;
     private FailureIngestionService failureIngestionService;
@@ -54,7 +55,7 @@ class FailureIngestionServiceTest {
         internalProperties.setFailureDedupTtlSeconds(60);
         failureIngestionService = new FailureIngestionService(
                 failureRepository, kafkaTemplate, registry, routingService, dnsProbeService,
-                stringRedisTemplate, internalProperties);
+                stringRedisTemplate, internalProperties, upstreamEjectionHealer);
     }
 
     @Test

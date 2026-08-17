@@ -19,6 +19,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
@@ -58,7 +59,7 @@ class IngressApiKeyServiceTest {
                 .keyHash(ApiKeyService.sha256Hex("the-secret-value-here-ok"))
                 .name("ingress:order-service")
                 .build();
-        when(apiKeyService.issue(eq(tenantId), eq("ingress:order-service"), isNull(), isNull()))
+        when(apiKeyService.issue(eq(tenantId), eq("ingress:order-service"), isNull(), isNull(), any()))
                 .thenReturn(new ApiKeyService.IssuedKey(stored, "mendr_AbC123xyz.the-secret-value-here-ok"));
 
         Map<String, Object> out = service.issue("order-service");

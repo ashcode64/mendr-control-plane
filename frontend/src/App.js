@@ -9,6 +9,7 @@ import Rules from './pages/Rules';
 import Services from './pages/Services';
 import Simulate from './pages/Simulate';
 import AuditLog from './pages/AuditLog';
+import DeveloperPortal from './pages/DeveloperPortal';
 import RequireAuth from './auth/RequireAuth';
 import { api } from './utils/api';
 
@@ -54,6 +55,7 @@ export default function App() {
             <Route path="/analysis" element={<Analysis onApproval={fetchPending} />} />
             <Route path="/rules" element={<Rules />} />
             <Route path="/services" element={<Services />} />
+            <Route path="/portal" element={<DeveloperPortal />} />
             <Route path="/simulate" element={<Simulate />} />
             <Route path="/audit" element={<AuditLog />} />
             <Route path="*" element={<Navigate to="/" replace />} />

@@ -6,6 +6,7 @@ import com.selfhealing.gateway.config.GatewayInternalProperties;
 import com.selfhealing.gateway.config.GatewayOpenRestyProperties;
 import com.selfhealing.gateway.model.RouteConfig;
 import com.selfhealing.gateway.model.ServiceRegistration;
+import com.selfhealing.gateway.dto.RouteConfigSnapshot;
 import com.selfhealing.gateway.service.InterServiceRouteDiscovery.RouteTriple;
 import com.selfhealing.gateway.transform.TransformProgram;
 import org.junit.jupiter.api.BeforeEach;
@@ -40,6 +41,8 @@ class RouteConfigSnapshotPublisherTest {
     @Mock private com.selfhealing.gateway.repository.ServiceContractRepository serviceContractRepository;
     @Mock private com.selfhealing.gateway.repository.OpenApiSpecRegistryRepository openApiSpecRegistryRepository;
     @Mock private IngressHostIdentityService ingressHostIdentityService;
+    @Mock private GatewayPolicyOverlayService gatewayPolicyOverlayService;
+    @Mock private EdgeCapabilityTracker edgeCapabilityTracker;
 
     private RouteConfigSnapshotPublisher publisher;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -66,7 +69,9 @@ class RouteConfigSnapshotPublisherTest {
                 serviceRouteRepository,
                 serviceContractRepository,
                 openApiSpecRegistryRepository,
-                ingressHostIdentityService);
+                ingressHostIdentityService,
+                gatewayPolicyOverlayService,
+                edgeCapabilityTracker);
     }
 
     @Test
@@ -128,7 +133,9 @@ class RouteConfigSnapshotPublisherTest {
                 serviceRouteRepository,
                 serviceContractRepository,
                 openApiSpecRegistryRepository,
-                ingressHostIdentityService);
+                ingressHostIdentityService,
+                gatewayPolicyOverlayService,
+                edgeCapabilityTracker);
 
         RouteConfig config = RouteConfig.builder()
                 .sourceService("order-service")
@@ -400,5 +407,22 @@ class RouteConfigSnapshotPublisherTest {
         assertThat(root.get("programHash").asText()).isEqualTo("fixedhash");
         assertThat(root.get("requestProgram").get("ops")).hasSize(1);
         verify(syncMetrics).recordOverlayDrift();
+    }
+
+    @Test
+    void stripSpliceFieldsForcesStreamableFalseWhenOpsPresent() {
+        RouteConfigSnapshot.TransformProgramSnapshot program =
+                RouteConfigSnapshot.TransformProgramSnapshot.builder()
+                        .empty(false)
+                        .streamable(true)
+                        .ops(List.of(Map.of("op", "rename", "from", "/amt", "to", "/amount")))
+                        .planClass("PREFILTERABLE")
+                        .build();
+        RouteConfigSnapshot snapshot = RouteConfigSnapshot.builder()
+                .responseProgram(program)
+                .build();
+        RouteConfigSnapshotPublisher.stripSpliceFields(snapshot);
+        assertThat(snapshot.getResponseProgram().getPlanClass()).isNull();
+        assertThat(snapshot.getResponseProgram().isStreamable()).isFalse();
     }
 }

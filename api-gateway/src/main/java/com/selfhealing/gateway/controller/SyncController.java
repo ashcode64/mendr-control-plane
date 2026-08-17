@@ -1,6 +1,7 @@
 package com.selfhealing.gateway.controller;
 
 import com.selfhealing.gateway.dto.RouteConfigSyncPayload;
+import com.selfhealing.gateway.service.EdgeCapabilityTracker;
 import com.selfhealing.gateway.service.RouteConfigSnapshotPublisher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -19,11 +20,13 @@ public class SyncController {
     private static final long SYNC_TIMEOUT_MS = 30_000L;
 
     private final RouteConfigSnapshotPublisher snapshotPublisher;
+    private final EdgeCapabilityTracker edgeCapabilityTracker;
 
     @GetMapping("/routeconfig")
     public Object syncRouteConfig(@RequestParam(name = "since", required = false) Long since,
                                   @RequestParam(name = "caps", required = false) String caps) {
         java.util.Set<String> capabilities = parseCaps(caps);
+        edgeCapabilityTracker.record(capabilities);
         long current = snapshotPublisher.currentConfigVersion();
         if (since == null || since < current) {
             return ResponseEntity.ok(snapshotPublisher.buildFullSyncPayload(capabilities));

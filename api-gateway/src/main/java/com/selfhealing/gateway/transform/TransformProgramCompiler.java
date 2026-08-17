@@ -367,7 +367,9 @@ public class TransformProgramCompiler {
             return;
         }
         acc.ops.addAll(ops);
-        acc.streamable = false;
+        // Streamable is derived from planClass in Acc.build(). Old edges without
+        // the splice cap get streamable forced false in stripSpliceFields.
+
     }
 
     /** Shared for WRAP_ARRAY / UNWRAP_ARRAY: each {path}. */
@@ -426,9 +428,24 @@ public class TransformProgramCompiler {
                     && wrapArraysByPath.isEmpty() && unwrapArraysByPath.isEmpty()
                     && ops.isEmpty()
                     && wrapKey == null && unwrapKey == null;
+            var classified = classifyAcc(empty);
+            boolean streamableOut = empty;
+            if (!empty) {
+                String pc = classified.planClass();
+                boolean classifiedStreamable =
+                        com.selfhealing.gateway.transform.dsl.PlanClassClassifier.PASSTHROUGH.equals(pc)
+                        || com.selfhealing.gateway.transform.dsl.PlanClassClassifier.PREFILTERABLE.equals(pc)
+                        || com.selfhealing.gateway.transform.dsl.PlanClassClassifier.FORWARD_ONLY.equals(pc)
+                        || com.selfhealing.gateway.transform.dsl.PlanClassClassifier.BOUNDED_WINDOW.equals(pc);
+                if (!ops.isEmpty()) {
+                    streamableOut = classifiedStreamable;
+                } else {
+                    streamableOut = streamable && classifiedStreamable;
+                }
+            }
             return TransformProgram.builder()
                     .empty(empty)
-                    .streamable(streamable)
+                    .streamable(streamableOut)
                     .schemaVersion(ops.isEmpty() ? "v1" : "v2")
                     .ops(List.copyOf(ops))
                     .renames(Map.copyOf(renames))
@@ -445,7 +462,63 @@ public class TransformProgramCompiler {
                     .unwrapArrays(List.copyOf(unwrapArraysByPath.values()))
                     .wrapKey(wrapKey)
                     .unwrapKey(unwrapKey)
+                    .planClass(classified.planClass())
+                    .prefilterLiterals(classified.prefilterLiterals())
+                    .writePointers(classified.writePointers())
+                    .maxWindowDepth(classified.maxWindowDepth())
+                    .prefilterable(classified.prefilterable())
                     .build();
+        }
+
+        private com.selfhealing.gateway.transform.dsl.PlanClassClassifier.Classification classifyAcc(boolean empty) {
+            if (empty) {
+                return new com.selfhealing.gateway.transform.dsl.PlanClassClassifier.Classification(
+                        com.selfhealing.gateway.transform.dsl.PlanClassClassifier.PASSTHROUGH,
+                        List.of(), List.of(), "0", false);
+            }
+            var fromOps = com.selfhealing.gateway.transform.dsl.PlanClassClassifier.classifySnapshotOps(ops);
+            var extra = new java.util.ArrayList<java.util.Map<String, Object>>();
+            if (wrapKey != null) {
+                extra.add(java.util.Map.of("op", "wrap", "key", wrapKey));
+            }
+            if (unwrapKey != null) {
+                extra.add(java.util.Map.of("op", "unwrap", "key", unwrapKey));
+            }
+            for (var mv : moves) {
+                extra.add(java.util.Map.of("op", "move",
+                        "from", String.valueOf(mv.get("from")),
+                        "to", String.valueOf(mv.get("to"))));
+            }
+            for (String from : renames.keySet()) {
+                extra.add(java.util.Map.of("op", "rename",
+                        "from", "/" + from, "to", "/" + renames.get(from)));
+            }
+            for (String k : coercions.keySet()) {
+                extra.add(java.util.Map.of("op", "coerce", "path", "/" + k));
+            }
+            for (String k : removals) {
+                extra.add(java.util.Map.of("op", "remove", "path", "/" + k));
+            }
+            if (!defaults.isEmpty()) {
+                for (String k : defaults.keySet()) {
+                    extra.add(java.util.Map.of("op", "default", "path", "/" + k, "on", "ABSENT"));
+                }
+            }
+            for (var sc : scalesByPath.values()) extra.add(withOp(sc, "scale"));
+            for (var co : coalesceByPath.values()) extra.add(withOp(co, "coalesce"));
+            for (var vm : valueMapsByPath.values()) extra.add(withOp(vm, "map_value"));
+            for (var df : dateFormatsByPath.values()) extra.add(withOp(df, "reformat_date"));
+            for (var su : stripUnknownByPath.values()) extra.add(withOp(su, "strip_unknown"));
+            for (var wa : wrapArraysByPath.values()) extra.add(withOp(wa, "wrap_array"));
+            for (var ua : unwrapArraysByPath.values()) extra.add(withOp(ua, "unwrap_array"));
+            var fromBuckets = com.selfhealing.gateway.transform.dsl.PlanClassClassifier.classifySnapshotOps(extra);
+            return com.selfhealing.gateway.transform.dsl.PlanClassClassifier.merge(fromOps, fromBuckets);
+        }
+
+        private static java.util.Map<String, Object> withOp(java.util.Map<String, Object> entry, String opcode) {
+            java.util.Map<String, Object> m = new HashMap<>(entry);
+            m.put("op", opcode);
+            return m;
         }
 
         /**

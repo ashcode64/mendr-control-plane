@@ -302,6 +302,11 @@ public class RouteProgramService {
                 .stripUnknown(program.getStripUnknown())
                 .wrapArrays(program.getWrapArrays())
                 .unwrapArrays(program.getUnwrapArrays())
+                .planClass(program.getPlanClass())
+                .prefilterLiterals(program.getPrefilterLiterals())
+                .writePointers(program.getWritePointers())
+                .maxWindowDepth(program.getMaxWindowDepth())
+                .prefilterable(program.isPrefilterable())
                 .build();
         return objectMapper.convertValue(snap, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
     }

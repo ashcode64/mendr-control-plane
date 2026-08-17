@@ -48,6 +48,7 @@ public class ManifestImportService {
     private final RouteChangedPublisher routeChangedPublisher;
     private final ObjectMapper jsonMapper;
     private final TopologyGraphWriter topologyGraphWriter;
+    private final ServiceInstanceService serviceInstanceService;
 
     private final YAMLMapper yamlMapper = new YAMLMapper();
 
@@ -89,6 +90,21 @@ public class ManifestImportService {
 
         ServiceRegistration registration = toRegistration(spec);
         registryService.register(registration);
+
+        if (spec.getInstances() != null) {
+            for (ServiceManifest.InstanceSpec inst : spec.getInstances()) {
+                if (inst == null || isBlank(inst.getBaseUrl())) continue;
+                try {
+                    serviceInstanceService.add(serviceName, com.selfhealing.gateway.model.ServiceInstance.builder()
+                            .baseUrl(inst.getBaseUrl().trim())
+                            .weight(inst.getWeight() != null ? inst.getWeight() : 100)
+                            .zone(inst.getZone())
+                            .build());
+                } catch (Exception e) {
+                    warnings.add("Failed to add instance " + inst.getBaseUrl() + ": " + e.getMessage());
+                }
+            }
+        }
 
         List<String> contractLines = new ArrayList<>();
         List<String> routeLines = new ArrayList<>();
@@ -253,6 +269,27 @@ public class ManifestImportService {
     // ── Mapping helpers ──────────────────────────────────────────────────────
 
     private ServiceRegistration toRegistration(ServiceManifest.ServiceSpec spec) {
+        Map<String, Object> retry = mergePolicyMap(spec.getRetryPolicy());
+        if (spec.getTrafficPolicy() != null && !spec.getTrafficPolicy().isEmpty()) {
+            retry.put("traffic", spec.getTrafficPolicy());
+        }
+        if (spec.getVersioning() != null && !spec.getVersioning().isEmpty()) {
+            retry.put("versioning", spec.getVersioning());
+        }
+        if (spec.getWafPolicy() != null && !spec.getWafPolicy().isEmpty()) {
+            retry.put("waf", spec.getWafPolicy());
+        }
+
+        Map<String, Object> authPolicy = mergePolicyMap(spec.getAuthPolicy());
+        if (spec.getWafPolicy() != null && !spec.getWafPolicy().isEmpty()
+                && !authPolicy.containsKey("waf")) {
+            authPolicy.put("waf", spec.getWafPolicy());
+        }
+        if (spec.getRateLimitPolicy() != null && !spec.getRateLimitPolicy().isEmpty()) {
+            // Persist rate-limit hint under authPolicy for overlay discovery; also usable as metadata
+            authPolicy.put("rateLimit", spec.getRateLimitPolicy());
+        }
+
         ServiceRegistration.ServiceRegistrationBuilder builder = ServiceRegistration.builder()
                 .name(spec.getName().trim())
                 .baseUrl(spec.getBaseUrl().trim())
@@ -261,7 +298,13 @@ public class ManifestImportService {
                 .teamEmail(spec.getTeamEmail())
                 .healthEndpoint(spec.getHealthEndpoint())
                 .timeoutMs(spec.getTimeoutMs())
-                .retryCount(spec.getRetryCount());
+                .retryCount(spec.getRetryCount())
+                .loadBalanceAlgorithm(spec.getLoadBalanceAlgorithm())
+                .protocol(spec.getProtocol())
+                .circuitBreakerJson(spec.getCircuitBreaker())
+                .retryPolicyJson(retry.isEmpty() ? spec.getRetryPolicy() : retry)
+                .cachePolicyJson(spec.getCachePolicy())
+                .authPolicyJson(authPolicy.isEmpty() ? spec.getAuthPolicy() : authPolicy);
 
         if (spec.getAllowedCallerOrigins() != null) {
             builder.allowedCallerOrigins(new ArrayList<>(spec.getAllowedCallerOrigins()));
@@ -337,6 +380,14 @@ public class ManifestImportService {
     }
 
     // ── Small utils ──────────────────────────────────────────────────────────
+
+    private static Map<String, Object> mergePolicyMap(Map<String, Object> source) {
+        Map<String, Object> out = new java.util.LinkedHashMap<>();
+        if (source != null) {
+            out.putAll(source);
+        }
+        return out;
+    }
 
     private static <T> List<T> nullSafe(List<T> list) {
         return list == null ? List.of() : list;

@@ -70,11 +70,29 @@ public class RouteConfigSnapshotPublisher {
     private final ServiceContractRepository serviceContractRepository;
     private final OpenApiSpecRegistryRepository openApiSpecRegistryRepository;
     private final IngressHostIdentityService ingressHostIdentityService;
+    private final GatewayPolicyOverlayService gatewayPolicyOverlayService;
+    private final EdgeCapabilityTracker edgeCapabilityTracker;
 
     /** Edge capability token: advertises support for snapshot v2 {@code ops[]} (MendrScript). */
     public static final String CAP_V2 = "v2";
     /** Edge capability token: advertises transparent HTTP ingress + radixtree tables. */
     public static final String CAP_INGRESS = "ingress";
+    /** Multi-instance LB, retries, circuit breaker, timeouts. */
+    public static final String CAP_TRAFFIC = "traffic";
+    /** Control-plane authored rate / quota policies. */
+    public static final String CAP_RATELIMIT = "ratelimit";
+    /** Edge consumer JWT/OIDC/API-key auth policies. */
+    public static final String CAP_AUTHZ = "authz";
+    /** Response caching. */
+    public static final String CAP_CACHE = "cache";
+    /** Prometheus / metrics scrape support. */
+    public static final String CAP_METRICS = "metrics";
+    /** AI gateway TPM / semantic cache / prompt firewall. */
+    public static final String CAP_AI = "ai";
+    /** WAF / geo / IP threat policies. */
+    public static final String CAP_WAF = "waf";
+    /** Edge capability token: FORWARD_ONLY splice rewriter. */
+    public static final String CAP_SPLICE = "splice";
 
     private final Object pendingSyncLock = new Object();
 
@@ -169,6 +187,13 @@ public class RouteConfigSnapshotPublisher {
      */
     public RouteConfigSyncPayload buildFullSyncPayload(Set<String> caps) {
         boolean v2 = caps != null && caps.contains(CAP_V2);
+        boolean traffic = caps != null && caps.contains(CAP_TRAFFIC);
+        boolean ratelimit = caps != null && caps.contains(CAP_RATELIMIT);
+        boolean authz = caps != null && caps.contains(CAP_AUTHZ);
+        boolean cache = caps != null && caps.contains(CAP_CACHE);
+        boolean ai = caps != null && caps.contains(CAP_AI);
+        boolean waf = caps != null && caps.contains(CAP_WAF);
+        boolean splice = caps != null && caps.contains(CAP_SPLICE);
         Map<String, String> routes = new LinkedHashMap<>();
         Set<String> currentKeys = new HashSet<>();
         // Routes whose source still exists but whose snapshot build failed this run.
@@ -189,6 +214,11 @@ public class RouteConfigSnapshotPublisher {
                 snapshot.setSyncValidation(isSyncValidationRoute(
                         triple.source(), triple.target(), triple.endpoint()));
                 applyDockerHostRewrite(snapshot);
+                gatewayPolicyOverlayService.overlay(snapshot, triple.target(), triple.endpoint());
+                stripUnauthenticatedCaps(snapshot, traffic, ratelimit, authz, cache, ai, waf);
+                if (!splice) {
+                    stripSpliceFields(snapshot);
+                }
 
                 if (!v2 && isV2OnlyRoute(snapshot)) {
                     // Capability mismatch: this edge cannot run the DSL program. Withhold +
@@ -239,7 +269,29 @@ public class RouteConfigSnapshotPublisher {
                         ? collectApiKeys() : null)
                 .hostIdentity(caps != null && caps.contains(CAP_INGRESS)
                         ? collectHostIdentity() : null)
+                .aiRoutes(caps != null && caps.contains(CAP_AI)
+                        ? collectAiRoutes() : null)
                 .build();
+    }
+
+    private Map<String, String> collectAiRoutes() {
+        Map<String, String> out = new LinkedHashMap<>();
+        try {
+            String pattern = TenantKeys.prefix() + "mendr:ai:route:*";
+            Set<String> keys = stringRedisTemplate.keys(pattern);
+            if (keys != null) {
+                for (String key : keys) {
+                    String val = stringRedisTemplate.opsForValue().get(key);
+                    if (val == null) continue;
+                    int idx = key.indexOf("mendr:ai:route:");
+                    if (idx < 0) continue;
+                    out.put(key.substring(idx), val);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to collect AI routes for sync: {}", e.getMessage());
+        }
+        return out;
     }
 
     /**
@@ -362,6 +414,8 @@ public class RouteConfigSnapshotPublisher {
             overlayEnforceAndSurface(snapshot, sourceService, targetService, endpoint);
             snapshot.setSyncValidation(isSyncValidationRoute(sourceService, targetService, endpoint));
             applyDockerHostRewrite(snapshot);
+            gatewayPolicyOverlayService.overlay(snapshot, targetService, endpoint);
+            applyCapabilityStrip(snapshot);
 
             String redisKey = redisKey(sourceService, targetService, endpoint);
             String physicalKey = TenantKeys.scoped(redisKey);
@@ -584,6 +638,81 @@ public class RouteConfigSnapshotPublisher {
             }
     }
 
+    /**
+     * Capability negotiation: withhold policy blocks from edges that have not
+     * advertised the matching cap token (keeps old edges on a lean payload).
+     */
+    private void applyCapabilityStrip(RouteConfigSnapshot snapshot) {
+        Set<String> caps = edgeCapabilityTracker.lastSeen();
+        if (caps.isEmpty()) {
+            return;
+        }
+        boolean traffic = caps.contains(CAP_TRAFFIC);
+        boolean ratelimit = caps.contains(CAP_RATELIMIT);
+        boolean authz = caps.contains(CAP_AUTHZ);
+        boolean cache = caps.contains(CAP_CACHE);
+        boolean ai = caps.contains(CAP_AI);
+        boolean waf = caps.contains(CAP_WAF);
+        boolean splice = caps.contains(CAP_SPLICE);
+        stripUnauthenticatedCaps(snapshot, traffic, ratelimit, authz, cache, ai, waf);
+        if (!splice) {
+            stripSpliceFields(snapshot);
+        }
+    }
+
+    static void stripUnauthenticatedCaps(RouteConfigSnapshot snapshot,
+                                         boolean traffic, boolean ratelimit,
+                                         boolean authz, boolean cache,
+                                         boolean ai, boolean waf) {
+        if (!traffic) {
+            snapshot.setTargetInstances(null);
+            snapshot.setTrafficPolicy(null);
+            snapshot.setVersioning(null);
+        }
+        if (!ratelimit) {
+            snapshot.setRateLimitPolicy(null);
+            snapshot.setTenantQuota(null);
+        }
+        if (!authz) {
+            snapshot.setAuthPolicy(null);
+        }
+        if (!cache) {
+            snapshot.setCachePolicy(null);
+        }
+        if (!ai) {
+            snapshot.setAiPolicy(null);
+        }
+        if (!waf) {
+            snapshot.setWafPolicy(null);
+        }
+    }
+
+    /** Old edges ignore unknown JSON fields; strip splice metadata so the payload stays lean. */
+    static void stripSpliceFields(RouteConfigSnapshot snapshot) {
+        stripSpliceProgram(snapshot.getRequestProgram());
+        stripSpliceProgram(snapshot.getResponseProgram());
+    }
+
+    private static void stripSpliceProgram(TransformProgramSnapshot p) {
+        if (p == null) return;
+        p.setPlanClass(null);
+        p.setPrefilterLiterals(null);
+        p.setWritePointers(null);
+        p.setMaxWindowDepth(null);
+        p.setPrefilterable(null);
+        // Old edges ignore ops[] in has_ops; streamable=true would skip the DSL.
+        if (p.getOps() != null && !p.getOps().isEmpty()) {
+            p.setStreamable(false);
+        }
+    }
+
+    /** Back-compat overload used by unit tests. */
+    static void stripUnauthenticatedCaps(RouteConfigSnapshot snapshot,
+                                         boolean traffic, boolean ratelimit,
+                                         boolean authz, boolean cache) {
+        stripUnauthenticatedCaps(snapshot, traffic, ratelimit, authz, cache, false, false);
+    }
+
     static RouteConfigSnapshot toSnapshot(RouteConfig config) {
         String authType = config.getAuthType() != null
                 ? config.getAuthType().name()
@@ -622,6 +751,11 @@ public class RouteConfigSnapshotPublisher {
             return TransformProgramSnapshot.builder()
                     .empty(true)
                     .streamable(true)
+                    .planClass("PASSTHROUGH")
+                    .prefilterLiterals(java.util.List.of())
+                    .writePointers(java.util.List.of())
+                    .maxWindowDepth("0")
+                    .prefilterable(false)
                     .renames(java.util.Map.of())
                     .defaults(java.util.Map.of())
                     .coercions(java.util.Map.of())
@@ -648,6 +782,11 @@ public class RouteConfigSnapshotPublisher {
                 .stripUnknown(program.getStripUnknown())
                 .wrapArrays(program.getWrapArrays())
                 .unwrapArrays(program.getUnwrapArrays())
+                .planClass(program.getPlanClass())
+                .prefilterLiterals(program.getPrefilterLiterals())
+                .writePointers(program.getWritePointers())
+                .maxWindowDepth(program.getMaxWindowDepth())
+                .prefilterable(program.isPrefilterable())
                 .build();
     }
 

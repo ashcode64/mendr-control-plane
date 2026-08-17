@@ -68,6 +68,30 @@ public class ServiceRegistration implements TenantScoped {
     @Column(name = "retry_count")
     private Integer retryCount;
 
+    /** ROUND_ROBIN | WEIGHTED | CONSISTENT_HASH — used when service_instances exist. */
+    @Column(name = "load_balance_algorithm")
+    private String loadBalanceAlgorithm;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "circuit_breaker_json")
+    private java.util.Map<String, Object> circuitBreakerJson;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "retry_policy_json")
+    private java.util.Map<String, Object> retryPolicyJson;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "cache_policy_json")
+    private java.util.Map<String, Object> cachePolicyJson;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "auth_policy_json")
+    private java.util.Map<String, Object> authPolicyJson;
+
+    /** HTTP | HTTP2 | GRPC | WEBSOCKET */
+    @Column(name = "protocol")
+    private String protocol;
+
     /** Origins allowed to call this service via Mendr (enforced as CORS rules on the edge). */
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "allowed_caller_origins")
@@ -98,6 +122,8 @@ public class ServiceRegistration implements TenantScoped {
         if (retryCount == null)   retryCount = 2;
         if (healthEndpoint == null) healthEndpoint = "/actuator/health";
         if (namespace == null)    namespace = "default";
+        if (loadBalanceAlgorithm == null) loadBalanceAlgorithm = "ROUND_ROBIN";
+        if (protocol == null)     protocol = "HTTP";
         isActive = true;
     }
 

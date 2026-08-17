@@ -5,7 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.gateway.transform.dsl.MendrProgram;
 import com.selfhealing.gateway.transform.dsl.Op;
-import com.selfhealing.gateway.transform.dsl.ProgramSignature;
+import com.selfhealing.gateway.transform.dsl.PlanClassClassifier;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -70,19 +70,22 @@ public class MendrScriptCompiler {
      * any value-mutating op or any conditional forces the buffered path. (The edge
      * still re-derives this, but the snapshot flag lets v1-style fast paths skip
      * buffering when safe.)
+     *
+     * @deprecated Use {@link #classify(MendrProgram)}. Streamable follows planClass
+     *             (including {@code BOUNDED_WINDOW}). Publisher forces
+     *             {@code streamable=false} on ops[] for edges without the splice cap.
      */
+    @Deprecated
     public boolean isStreamable(MendrProgram program) {
-        ProgramSignature sig = program.signature();
-        if (sig.valueMutating()) {
-            return false;
-        }
-        for (String opcode : sig.opcodes()) {
-            switch (opcode) {
-                case "wrap", "unwrap", "wrap_array", "unwrap_array", "move", "conditional",
-                     "strip_unknown", "coalesce" -> { return false; }
-                default -> { }
-            }
-        }
-        return true;
+        var c = classify(program);
+        return PlanClassClassifier.PASSTHROUGH.equals(c.planClass())
+                || PlanClassClassifier.PREFILTERABLE.equals(c.planClass())
+                || PlanClassClassifier.FORWARD_ONLY.equals(c.planClass())
+                || PlanClassClassifier.BOUNDED_WINDOW.equals(c.planClass());
+    }
+
+    /** Execution-class ladder derived from the program's opcode set. */
+    public PlanClassClassifier.Classification classify(MendrProgram program) {
+        return PlanClassClassifier.classify(program);
     }
 }

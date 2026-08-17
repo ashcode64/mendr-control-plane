@@ -42,4 +42,10 @@ public class RouteConfigSyncPayload {
      * Used when {@code X-Mendr-Key} is absent and host fallback is enabled.
      */
     private Map<String, String> hostIdentity;
+
+    /**
+     * AI gateway virtual routes for edges advertising {@code ai}:
+     * map of {@code mendr:ai:route:{virtualPath}} → policy JSON.
+     */
+    private Map<String, String> aiRoutes;
 }

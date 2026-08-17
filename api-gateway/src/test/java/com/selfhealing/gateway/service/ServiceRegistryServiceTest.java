@@ -3,6 +3,7 @@ package com.selfhealing.gateway.service;
 import com.selfhealing.gateway.config.GatewayOpenRestyProperties;
 import com.selfhealing.gateway.model.ServiceRegistration;
 import com.selfhealing.gateway.repository.ServiceContractRepository;
+import com.selfhealing.gateway.repository.ServiceInstanceRepository;
 import com.selfhealing.gateway.repository.ServiceRegistrationRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ import static org.mockito.Mockito.when;
 class ServiceRegistryServiceTest {
 
     @Mock private ServiceRegistrationRepository serviceRepo;
+    @Mock private ServiceInstanceRepository serviceInstanceRepository;
     @Mock private ServiceContractRepository contractRepo;
     @Mock private RedisTemplate<String, Object> redisTemplate;
     @Mock private RestTemplate restTemplate;
@@ -45,7 +47,7 @@ class ServiceRegistryServiceTest {
         existingId = UUID.randomUUID();
         createdAt = LocalDateTime.now().minusDays(1);
         registryService = new ServiceRegistryService(
-                serviceRepo, contractRepo, redisTemplate, restTemplate,
+                serviceRepo, serviceInstanceRepository, contractRepo, redisTemplate, restTemplate,
                 routeChangedPublisher, openRestyProperties, dynamicCorsService);
     }
 

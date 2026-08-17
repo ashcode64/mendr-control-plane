@@ -83,8 +83,10 @@ public class IngressApiKeyService {
             throw new IllegalArgumentException("sourceService is required");
         }
         UUID tenant = TenantContext.currentOrDefault();
+        String trimmed = sourceService.trim();
+        String[] scopes = new String[] { "ingress:" + trimmed };
         ApiKeyService.IssuedKey issued = apiKeyService.issue(
-                tenant, "ingress:" + sourceService.trim(), null, null);
+                tenant, "ingress:" + trimmed, null, null, scopes);
 
         writeEdgeProjection(issued.stored(), sourceService.trim());
         snapshotPublisher.bumpSyncVersionAndNotify();
@@ -140,6 +142,9 @@ public class IngressApiKeyService {
         if (key.getRevokedAt() != null) {
             record.put("revokedAt", key.getRevokedAt().toEpochSecond(ZoneOffset.UTC));
         }
+        if (key.getScopes() != null && key.getScopes().length > 0) {
+            record.put("scopes", java.util.Arrays.asList(key.getScopes()));
+        }
         try {
             String physical = TenantKeys.scoped(REDIS_PREFIX + key.getKeyPrefix());
             stringRedisTemplate.opsForValue().set(physical, objectMapper.writeValueAsString(record));
@@ -157,6 +162,7 @@ public class IngressApiKeyService {
                 ? keyHash.substring(0, 12) : keyHash);
         out.put("sourceService", sourceService);
         out.put("tenantId", tenant.toString());
+        out.put("scopes", java.util.List.of("ingress:" + sourceService));
         out.put("apiKey", plaintext);
         return out;
     }

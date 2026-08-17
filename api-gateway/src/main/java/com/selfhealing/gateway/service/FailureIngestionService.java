@@ -38,6 +38,7 @@ public class FailureIngestionService {
     private final DnsProbeService dnsProbeService;
     private final StringRedisTemplate stringRedisTemplate;
     private final GatewayInternalProperties internalProperties;
+    private final UpstreamEjectionHealer upstreamEjectionHealer;
 
     public IngestOutcome ingest(IngestFailureRequest request) {
         String dedupKey = failureDedupKey(request);
@@ -81,6 +82,14 @@ public class FailureIngestionService {
         int ttl = internalProperties.getFailureDedupTtlSeconds();
         if (ttl > 0) {
             stringRedisTemplate.opsForValue().set(dedupKey, "1", Duration.ofSeconds(ttl));
+        }
+
+        try {
+            int status = request.getErrorCode();
+            String ejectUrl = !isBlank(targetServiceUrl) ? targetServiceUrl : attemptedUrl;
+            upstreamEjectionHealer.onUpstreamFailure(request.getTargetService(), ejectUrl, status);
+        } catch (Exception e) {
+            log.debug("Upstream ejection hook skipped: {}", e.getMessage());
         }
 
         return IngestOutcome.accepted(failure.getId());

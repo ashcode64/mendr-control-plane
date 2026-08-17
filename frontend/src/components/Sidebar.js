@@ -8,6 +8,7 @@ const NAV = [
   { to: '/analysis', icon: '🧠',  label: 'AI Analysis'   },
   { to: '/rules',    icon: '⚙️',  label: 'Active Rules'  },
   { to: '/services', icon: '🔌',  label: 'Services'      },
+  { to: '/portal',   icon: '📚',  label: 'Dev Portal'    },
   { to: '/simulate', icon: '🎯',  label: 'Simulate'      },
   { to: '/audit',    icon: '📋',  label: 'Audit Log'     },
 ];

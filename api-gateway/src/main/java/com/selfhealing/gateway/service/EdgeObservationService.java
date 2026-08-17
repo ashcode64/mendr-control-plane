@@ -13,6 +13,7 @@ import java.util.List;
  * Ingests a batch of TRAFFIC_OBSERVED topology edges from the data plane and upserts
  * them (with accumulating call volume) through {@link TopologyGraphWriter}, then
  * rebuilds the content-addressed adjacency snapshot once for the batch.
+ * Also feeds {@link UpstreamEjectionHealer} success/failure streaks.
  */
 @Slf4j
 @Service
@@ -20,6 +21,7 @@ import java.util.List;
 public class EdgeObservationService {
 
     private final TopologyGraphWriter topologyGraphWriter;
+    private final UpstreamEjectionHealer upstreamEjectionHealer;
 
     @Transactional
     public int ingest(EdgeObservationRequest request) {
@@ -37,6 +39,13 @@ public class EdgeObservationService {
                         obs.getSourceService(), obs.getTargetService(),
                         obs.getEndpoint(), obs.getHttpMethod(), 1L);
                 applied++;
+                Integer status = obs.getStatusCode();
+                String peerHint = obs.getTargetService();
+                if (status != null && status >= 200 && status < 400) {
+                    upstreamEjectionHealer.onUpstreamSuccess(obs.getTargetService(), peerHint);
+                } else if (status != null && (status >= 500 || status == 0)) {
+                    upstreamEjectionHealer.onUpstreamFailure(obs.getTargetService(), peerHint, status);
+                }
             } catch (Exception e) {
                 log.warn("Edge observation upsert failed for {}->{}{} — {}",
                         obs.getSourceService(), obs.getTargetService(), obs.getEndpoint(), e.getMessage());

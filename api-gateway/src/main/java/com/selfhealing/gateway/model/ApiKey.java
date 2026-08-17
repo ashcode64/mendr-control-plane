@@ -46,4 +46,8 @@ public class ApiKey {
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
+
+    /** Optional OAuth-style scopes for edge authPolicy.requiredScopes checks. */
+    @Column(name = "scopes", columnDefinition = "text[]")
+    private String[] scopes;
 }

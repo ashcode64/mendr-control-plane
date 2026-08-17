@@ -67,6 +67,18 @@ class ApiKeyServiceTest {
     }
 
     @Test
+    void issue_withScopes_persistsScopesOnStoredKey() {
+        when(repository.save(any(ApiKey.class))).thenAnswer(inv -> inv.getArgument(0));
+        ApiKeyService service = new ApiKeyService(repository);
+        UUID tenantId = UUID.randomUUID();
+        String[] scopes = new String[] { "ingress:orders", "read:orders" };
+
+        ApiKeyService.IssuedKey issued = service.issue(tenantId, "ingress:orders", null, null, scopes);
+
+        assertThat(issued.stored().getScopes()).containsExactly(scopes);
+    }
+
+    @Test
     void authenticate_rejectsMalformedInput() {
         ApiKeyService service = new ApiKeyService(repository);
         assertThat(service.authenticate(null)).isEmpty();

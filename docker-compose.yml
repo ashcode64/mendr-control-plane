@@ -34,6 +34,11 @@ services:
       # Confidence scoring calibrated columns (existing volumes:
       # psql -U admin -d selfhealing < infra/init_v16_confidence_calibration.sql)
       - ./infra/init_v16_confidence_calibration.sql:/docker-entrypoint-initdb.d/init_v16_confidence_calibration.sql
+      # Enterprise gateway policies (LB instances, rate limits, traffic/auth/cache JSON):
+      # existing volumes: psql -U admin -d selfhealing < infra/init_v17_gateway_policies.sql
+      # (also auto-patched on api-gateway startup)
+      - ./infra/init_v17_gateway_policies.sql:/docker-entrypoint-initdb.d/init_v17_gateway_policies.sql
+      - ./infra/init_v17b_ai_gateway.sql:/docker-entrypoint-initdb.d/init_v17b_ai_gateway.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U admin -d selfhealing"]
       interval: 10s

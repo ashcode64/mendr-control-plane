@@ -5,10 +5,11 @@ const gateway = axios.create({ baseURL: '/api/gateway', timeout: 10000 });
 const analysis = axios.create({ baseURL: '/api/analysis', timeout: 10000 });
 const rules = axios.create({ baseURL: '/api/rules', timeout: 10000 });
 const services = axios.create({ baseURL: '/api/services', timeout: 10000 });
+const portal = axios.create({ baseURL: '/api/portal', timeout: 10000 });
 
 // Attach the WorkOS bearer token (when a session exists) to every API call so the
 // backend can authenticate the caller and resolve the tenant from the org claim.
-[gateway, analysis, rules, services].forEach(client => {
+[gateway, analysis, rules, services, portal].forEach(client => {
   client.interceptors.request.use(async config => {
     const token = await getAccessToken();
     if (token) {
@@ -20,7 +21,7 @@ const services = axios.create({ baseURL: '/api/services', timeout: 10000 });
 });
 
 // Response interceptor: normalise errors and redirect to login on 401.
-[gateway, analysis, rules, services].forEach(client => {
+[gateway, analysis, rules, services, portal].forEach(client => {
   client.interceptors.response.use(
     r => r,
     err => {
@@ -183,4 +184,12 @@ export const api = {
     })();
     return controller;
   },
+
+  // ── Developer Portal ───────────────────────────────────────────────────────
+  getPortalCatalog: () => portal.get('/catalog').then(r => r.data),
+  getPortalSpecs: () => portal.get('/specs').then(r => r.data),
+  getPortalUsage: () => portal.get('/usage').then(r => r.data),
+  issuePortalApiKey: body => portal.post('/api-keys', body).then(r => r.data),
+  getAiRoutes: () => gateway.get('/ai-routes').then(r => r.data),
+  upsertAiRoute: body => gateway.post('/ai-routes', body).then(r => r.data),
 };

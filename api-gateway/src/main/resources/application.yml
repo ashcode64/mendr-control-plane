@@ -33,10 +33,25 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${MENDR_OTEL_SAMPLE_RATE:1.0}
+  otlp:
+    tracing:
+      endpoint: ${MENDR_OTEL_EXPORTER_OTLP_ENDPOINT:}
+      export:
+        enabled: ${MENDR_OTEL_ENABLED:false}
 
 logging:
   level:

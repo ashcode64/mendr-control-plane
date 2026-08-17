@@ -37,8 +37,33 @@ public class ServiceManifest {
         private String healthEndpoint;
         private Integer timeoutMs;
         private Integer retryCount;
+        /** ROUND_ROBIN | WEIGHTED | CONSISTENT_HASH */
+        private String loadBalanceAlgorithm;
+        private String protocol;
         private AuthSpec auth;
         private List<String> allowedCallerOrigins = new ArrayList<>();
+        /** Multi-instance upstream pool (optional; falls back to baseUrl). */
+        private List<InstanceSpec> instances = new ArrayList<>();
+        private Map<String, Object> circuitBreaker;
+        private Map<String, Object> retryPolicy;
+        private Map<String, Object> cachePolicy;
+        private Map<String, Object> authPolicy;
+        /** Nested under authPolicy or top-level: mode, ipAllow, geoDeny, botMode, … */
+        private Map<String, Object> wafPolicy;
+        /** rateLimit: requestsPerSecond, requestsPerMinute, burst, algorithm */
+        private Map<String, Object> rateLimitPolicy;
+        /** traffic: canaryPercent, canaryInstances, mirrorPercent, mirrorInstances */
+        private Map<String, Object> trafficPolicy;
+        /** versioning: apiVersion, deprecated, sunsetAt, successorEndpoint */
+        private Map<String, Object> versioning;
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class InstanceSpec {
+        private String baseUrl;
+        private Integer weight;
+        private String zone;
     }
 
     @Data

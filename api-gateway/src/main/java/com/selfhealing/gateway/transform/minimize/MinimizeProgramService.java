@@ -129,7 +129,7 @@ public class MinimizeProgramService {
         out.put("draftProgram", draft);
         out.put("engine", engine);
         // Preference pairs only when op counts shrink (same-size valueMutating wins are not logged).
-        if candidate.ops().size() < originalCount {
+        if (candidate.ops().size() < originalCount) {
             out.put("preferencePair", Map.of("chosen", candidate, "rejected", draft));
         }
         return out;

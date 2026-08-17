@@ -224,6 +224,32 @@ class MendrScriptExecutorTest {
     }
 
     @Test
+    void renameThenCoerceAppliesInOpcodeOrder() {
+        MendrProgram p = parse("""
+            {"ops":[
+              {"op":"rename","from":"/amt","to":"/amount"},
+              {"op":"coerce","path":"/amount","targetType":"integer"}
+            ]}""");
+        assertTrue(verifier.verify(p).valid());
+        Map<String, Object> out = (Map<String, Object>) executor.execute(p, input("{\"amt\":\"5\"}"));
+        assertEquals(5, ((Number) out.get("amount")).intValue());
+        assertFalse(out.containsKey("amt"));
+    }
+
+    @Test
+    void wrapThenUnwrapRoundTripsObject() {
+        MendrProgram p = parse("""
+            {"ops":[
+              {"op":"wrap","key":"data"},
+              {"op":"unwrap","key":"data"}
+            ]}""");
+        assertTrue(verifier.verify(p).valid());
+        Map<String, Object> out = (Map<String, Object>) executor.execute(p, input("{\"n\":1}"));
+        assertEquals(1, ((Number) out.get("n")).intValue());
+        assertFalse(out.containsKey("data"));
+    }
+
+    @Test
     void simulatorReportsFaultAsCounterexample() {
         MendrProgram p = parse("""
             {"ops":[{"op":"scale","path":"/amount","numerator":1,"denominator":100,

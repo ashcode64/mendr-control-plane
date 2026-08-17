@@ -62,6 +62,17 @@ public class TransformProgram {
     /** UNWRAP_ARRAY (§12, scenario 11): {path} — replace a single-element array with its element. */
     List<Map<String, Object>> unwrapArrays;
 
+    /**
+     * Execution class for the edge splice path. Additive; pre-splice edges ignore
+     * this field and keep using {@link #streamable} + the DOM interpreter.
+     */
+    String planClass;
+    List<String> prefilterLiterals;
+    List<String> writePointers;
+    /** Integer depth or {@code UNBOUNDED}. */
+    String maxWindowDepth;
+    boolean prefilterable;
+
     public static TransformProgram none() {
         return TransformProgram.builder()
                 .empty(true)
@@ -80,6 +91,11 @@ public class TransformProgram {
                 .stripUnknown(List.of())
                 .wrapArrays(List.of())
                 .unwrapArrays(List.of())
+                .planClass("PASSTHROUGH")
+                .prefilterLiterals(List.of())
+                .writePointers(List.of())
+                .maxWindowDepth("0")
+                .prefilterable(false)
                 .build();
     }
 }

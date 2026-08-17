@@ -38,6 +38,13 @@ public class ApiKeyService {
      * surface {@link IssuedKey#plaintext()} to the operator immediately and discard it.
      */
     public IssuedKey issue(UUID tenantId, String name, UUID createdBy, LocalDateTime expiresAt) {
+        return issue(tenantId, name, createdBy, expiresAt, null);
+    }
+
+    /**
+     * Issue a new per-tenant API key with optional OAuth-style scopes for edge authPolicy checks.
+     */
+    public IssuedKey issue(UUID tenantId, String name, UUID createdBy, LocalDateTime expiresAt, String[] scopes) {
         if (tenantId == null) {
             throw new IllegalArgumentException("tenantId is required");
         }
@@ -50,6 +57,7 @@ public class ApiKeyService {
                 .keyHash(sha256Hex(secret))
                 .createdBy(createdBy)
                 .expiresAt(expiresAt)
+                .scopes(scopes)
                 .createdAt(LocalDateTime.now())
                 .build();
         ApiKey saved = apiKeyRepository.save(key);

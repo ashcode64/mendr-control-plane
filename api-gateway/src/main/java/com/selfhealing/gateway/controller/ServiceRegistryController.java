@@ -4,6 +4,7 @@ import com.selfhealing.gateway.dto.manifest.ManifestImportResult;
 import com.selfhealing.gateway.dto.manifest.ManifestValidationException;
 import com.selfhealing.gateway.dto.openapi.OpenApiImportResult;
 import com.selfhealing.gateway.model.ServiceContract;
+import com.selfhealing.gateway.model.ServiceInstance;
 import com.selfhealing.gateway.model.ServiceRegistration;
 import com.selfhealing.gateway.repository.ServiceContractRepository;
 import com.selfhealing.gateway.service.IngressApiKeyService;
@@ -12,6 +13,7 @@ import com.selfhealing.gateway.service.ManifestImportService;
 import com.selfhealing.gateway.service.OpenApiImportService;
 import com.selfhealing.gateway.service.RouteChangedPublisher;
 import com.selfhealing.gateway.service.RouteConfigSnapshotPublisher;
+import com.selfhealing.gateway.service.ServiceInstanceService;
 import com.selfhealing.gateway.service.ServiceRegistryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +43,7 @@ public class ServiceRegistryController {
     private final IngressApiKeyService      ingressApiKeyService;
     private final IngressHostIdentityService ingressHostIdentityService;
     private final RouteConfigSnapshotPublisher snapshotPublisher;
+    private final ServiceInstanceService serviceInstanceService;
 
     // ── Service CRUD ──────────────────────────────────────────────────────────
 
@@ -277,5 +280,49 @@ public class ServiceRegistryController {
             routeChangedPublisher.publishAll();
         });
         return ResponseEntity.ok(Map.of("message", "Contract deactivated", "id", id));
+    }
+
+    // ── Upstream instances (Phase 1 LB) ──────────────────────────────────────
+
+    @GetMapping("/{name}/instances")
+    public ResponseEntity<List<ServiceInstance>> listInstances(@PathVariable String name) {
+        try {
+            return ResponseEntity.ok(serviceInstanceService.list(name));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PostMapping("/{name}/instances")
+    public ResponseEntity<ServiceInstance> addInstance(
+            @PathVariable String name, @RequestBody ServiceInstance instance) {
+        try {
+            return ResponseEntity.ok(serviceInstanceService.add(name, instance));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PutMapping("/{name}/instances/{instanceId}")
+    public ResponseEntity<ServiceInstance> updateInstance(
+            @PathVariable String name,
+            @PathVariable UUID instanceId,
+            @RequestBody ServiceInstance patch) {
+        try {
+            return ResponseEntity.ok(serviceInstanceService.update(name, instanceId, patch));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @DeleteMapping("/{name}/instances/{instanceId}")
+    public ResponseEntity<Map<String, Object>> removeInstance(
+            @PathVariable String name, @PathVariable UUID instanceId) {
+        try {
+            serviceInstanceService.remove(name, instanceId);
+            return ResponseEntity.ok(Map.of("message", "Instance removed", "id", instanceId));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 }
