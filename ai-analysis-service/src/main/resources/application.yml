@@ -18,15 +18,21 @@ spring:
     consumer:
       group-id: ai-analysis-group
       auto-offset-reset: earliest
+      max-poll-records: 5
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
       properties:
+        max.poll.interval.ms: 600000
         spring.json.trusted.packages: "com.selfhealing.*"
         spring.json.use.type.headers: false
         spring.json.value.default.type: "com.selfhealing.analysis.dto.ApiFailureEvent"
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:${SPRING_REDIS_HOST:localhost}}
+      port: ${SPRING_DATA_REDIS_PORT:${SPRING_REDIS_PORT:6379}}
 
 mendr:
   tenancy:
@@ -144,6 +150,11 @@ mendr:
     cache-ms: ${MENDR_EVOLVEMEM_CACHE_MS:60000}
     tune-enabled: ${MENDR_EVOLVEMEM_TUNE_ENABLED:true}
   analysis:
+    llm:
+      semaphore: ${MENDR_ANALYSIS_LLM_SEMAPHORE:2}
+      coalesce-ttl-seconds: ${MENDR_ANALYSIS_LLM_COALESCE_TTL:30}
+      global-per-minute: ${MENDR_ANALYSIS_LLM_GLOBAL_PER_MIN:30}
+      tenant-per-minute: ${MENDR_ANALYSIS_LLM_TENANT_PER_MIN:10}
     security:
       # When true, /mcp and /api/analysis require a valid credential (WorkOS JWT for the
       # dashboard, shared internal key for machines). When false, endpoints stay open but

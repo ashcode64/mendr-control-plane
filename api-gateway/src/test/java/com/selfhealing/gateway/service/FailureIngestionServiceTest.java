@@ -46,8 +46,11 @@ class FailureIngestionServiceTest {
     private FailureIngestionService failureIngestionService;
 
     // Dedup keys are tenant-namespaced; no bound context falls back to default.
+    // Includes failure category (SET NX key).
     private static final String DEDUP_KEY =
-            "t:00000000-0000-0000-0000-000000000001:mendr:fail-dedup:order-service:payment-service:/api/payments/process";
+            "t:00000000-0000-0000-0000-000000000001:mendr:fail-dedup:order-service:payment-service:/api/payments/process:ROUTING";
+    private static final String DEDUP_KEY_SCHEMA =
+            "t:00000000-0000-0000-0000-000000000001:mendr:fail-dedup:order-service:payment-service:/api/payments/process:SCHEMA_MISMATCH";
 
     @BeforeEach
     void setUp() {
@@ -93,14 +96,14 @@ class FailureIngestionServiceTest {
                 .requestPayload(Map.of("amount", 100))
                 .build();
 
-        when(stringRedisTemplate.hasKey(DEDUP_KEY))
-                .thenReturn(false);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(eq(DEDUP_KEY), eq("1"), eq(Duration.ofSeconds(60))))
+                .thenReturn(true);
         when(registry.loadRegisteredBaseUrl("payment-service"))
                 .thenReturn(Optional.of("http://localhost:8091"));
         when(dnsProbeService.discoverNewUrl(eq("payment-service"), any()))
                 .thenReturn(Optional.of("http://localhost:8091"));
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         IngestOutcome outcome = failureIngestionService.ingest(request);
 
@@ -139,9 +142,9 @@ class FailureIngestionServiceTest {
                 .requestPayload(Map.of("amount", 100))
                 .build();
 
-        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
-        when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
         when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), eq("1"), any(Duration.class))).thenReturn(true);
+        when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
 
         failureIngestionService.ingest(ingestRequest);
         verify(kafkaTemplate, times(2)).send(eq("api.failures"), any(), captor.capture());
@@ -170,11 +173,11 @@ class FailureIngestionServiceTest {
                 .requestPayload(Map.of("amount", 100))
                 .build();
 
-        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), eq("1"), any(Duration.class))).thenReturn(true);
         when(registry.loadRegisteredBaseUrl("payment-service"))
                 .thenReturn(Optional.of("http://localhost:8091"));
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         failureIngestionService.ingest(request);
 
@@ -201,11 +204,11 @@ class FailureIngestionServiceTest {
                 .responsePayload(Map.of("raw", Map.of("error", "amount is required")))
                 .build();
 
-        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), eq("1"), any(Duration.class))).thenReturn(true);
         when(registry.loadRegisteredBaseUrl("payment-service"))
                 .thenReturn(Optional.of("http://localhost:8091"));
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         failureIngestionService.ingest(request);
 
@@ -229,11 +232,11 @@ class FailureIngestionServiceTest {
                 .errorMessage("bad schema")
                 .build();
 
-        when(stringRedisTemplate.hasKey(DEDUP_KEY))
-                .thenReturn(false, true);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(eq(DEDUP_KEY_SCHEMA), eq("1"), eq(Duration.ofSeconds(60))))
+                .thenReturn(true, false);
         when(registry.loadRegisteredBaseUrl("payment-service")).thenReturn(Optional.empty());
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         IngestOutcome first = failureIngestionService.ingest(request);
         IngestOutcome second = failureIngestionService.ingest(request);
@@ -242,8 +245,8 @@ class FailureIngestionServiceTest {
         assertThat(first.failureId()).isNotNull();
         assertThat(second.isDeduplicated()).isTrue();
         verify(kafkaTemplate, times(1)).send(eq("api.failures"), any(), any());
-        verify(valueOperations).set(
-                eq(DEDUP_KEY),
+        verify(valueOperations, times(2)).setIfAbsent(
+                eq(DEDUP_KEY_SCHEMA),
                 eq("1"),
                 eq(Duration.ofSeconds(60)));
     }
@@ -258,7 +261,8 @@ class FailureIngestionServiceTest {
                 .errorCode(400)
                 .build();
 
-        when(stringRedisTemplate.hasKey(any())).thenReturn(true);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), any(), any(Duration.class))).thenReturn(false);
 
         IngestOutcome outcome = failureIngestionService.ingest(request);
 
@@ -292,11 +296,11 @@ class FailureIngestionServiceTest {
                 .requestPayload(Map.of("amount", "x"))
                 .build();
 
-        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), eq("1"), any(Duration.class))).thenReturn(true);
         when(registry.loadRegisteredBaseUrl("payment-service"))
                 .thenReturn(Optional.of("http://localhost:8091"));
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         failureIngestionService.ingest(request);
 
@@ -327,11 +331,11 @@ class FailureIngestionServiceTest {
                 .requestPayload(Map.of())
                 .build();
 
-        when(stringRedisTemplate.hasKey(any())).thenReturn(false);
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), eq("1"), any(Duration.class))).thenReturn(true);
         when(registry.loadRegisteredBaseUrl("payment-service"))
                 .thenReturn(Optional.of("http://localhost:8091"));
         when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
-        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
 
         failureIngestionService.ingest(request);
 
@@ -340,6 +344,30 @@ class FailureIngestionServiceTest {
         assertThat(failureCaptor.getValue().getErrorMessage()).isEqualTo("legacy only");
     }
 
+    @Test
+    void ingestCarriesSuppressedCountToKafkaEvent() {
+        IngestFailureRequest request = IngestFailureRequest.builder()
+                .sourceService("order-service")
+                .targetService("payment-service")
+                .endpoint("/api/payments/process")
+                .httpMethod("POST")
+                .errorCode(502)
+                .errorType("SPLICE_FAILURE")
+                .failureCategory("SPLICE")
+                .errorMessage("aborted after flush")
+                .suppressedCount(7)
+                .build();
+
+        when(stringRedisTemplate.opsForValue()).thenReturn(valueOperations);
+        when(valueOperations.setIfAbsent(any(), eq("1"), any(Duration.class))).thenReturn(true);
+        when(registry.loadRegisteredBaseUrl("payment-service")).thenReturn(Optional.empty());
+        when(failureRepository.save(any(ApiFailure.class))).thenAnswer(this::withRandomId);
+
+        failureIngestionService.ingest(request);
+
+        ApiFailureEvent event = captureEvent();
+        assertThat(event.getSuppressedCount()).isEqualTo(7);
+    }
     private static ProxyRequest proxyRequest() {
         return ProxyRequest.builder()
                 .sourceService("order-service")

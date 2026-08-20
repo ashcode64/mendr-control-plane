@@ -1,11 +1,11 @@
 package com.selfhealing.analysis.kafka;
 
 import com.selfhealing.analysis.dto.ApiFailureEvent;
+import com.selfhealing.analysis.model.AnalysisResult;
 import com.selfhealing.analysis.service.AiAnalysisService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.support.Acknowledgment;
 import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
@@ -30,9 +30,15 @@ public class FailureEventConsumer {
                 topic, partition, offset, event.getFailureId());
 
         try {
-            analysisService.analyze(event);
-            log.info("AI analysis completed for failure: {}", event.getFailureId());
+            AnalysisResult result = analysisService.analyze(event);
+            if (result == null) {
+                // Deferred by LlmAdmissionControl — treat as success (ack), never nack/retry.
+                log.info("AI analysis deferred for failure: {}", event.getFailureId());
+            } else {
+                log.info("AI analysis completed for failure: {}", event.getFailureId());
+            }
         } catch (Exception e) {
+            // Poison / unexpected errors: log only. Do not rethrow (avoids LLM 429 retry storms).
             log.error("Failed to analyze event {}: {}", event.getFailureId(), e.getMessage(), e);
         }
     }

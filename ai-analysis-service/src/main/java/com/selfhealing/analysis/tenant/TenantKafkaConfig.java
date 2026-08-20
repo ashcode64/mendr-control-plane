@@ -43,6 +43,8 @@ public class TenantKafkaConfig {
                 new ConcurrentKafkaListenerContainerFactory<>();
         configurer.configure(factory, consumerFactory);
         factory.setRecordInterceptor(new TenantRecordInterceptor());
+        // Cap LLM fan-out: one consumer thread; long poll interval for slow diagnose/LLM.
+        factory.setConcurrency(1);
         return factory;
     }
 }

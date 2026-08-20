@@ -51,4 +51,6 @@ public class IngestFailureRequest {
      * Prefer {@code detail} / extensions when present; fall back to {@code errorMessage}.
      */
     private Map<String, Object> problemDetail;
+    /** Number of duplicate edge reports suppressed in the current dedup window. */
+    private Integer suppressedCount;
 }

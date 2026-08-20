@@ -46,4 +46,6 @@ public class ApiFailureEvent {
     private Map<String, Object> problemDetail;
     /** Selected upstream response headers from the edge. */
     private Map<String, Object> responseHeaders;
+    /** Number of duplicate edge reports suppressed in the current dedup window. */
+    private Integer suppressedCount;
 }

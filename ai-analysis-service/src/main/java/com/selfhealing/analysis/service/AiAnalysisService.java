@@ -33,30 +33,31 @@ import java.util.*;
  * compare "what was sent" vs "what was expected" with precision.
  *
  * Five categories produce five distinct prompt + rule type strategies:
- *   SCHEMA_MISMATCH  → FIELD_RENAME / TYPE_COERCE / ADD_DEFAULT / REMOVE_FIELD
- *   RESPONSE_MISMATCH→ RESPONSE_FIELD_RENAME / RESPONSE_TYPE_COERCE / etc.
- *   ROUTING          → ROUTING_OVERRIDE
- *   CORS             → CORS_ALLOW (Mendr edge)
- *   CORS_UPSTREAM    → CORS_ORIGIN_OVERRIDE (Service B rejected Origin)
- *   UNKNOWN          → generic
+ *   SCHEMA_MISMATCH  ? FIELD_RENAME / TYPE_COERCE / ADD_DEFAULT / REMOVE_FIELD
+ *   RESPONSE_MISMATCH? RESPONSE_FIELD_RENAME / RESPONSE_TYPE_COERCE / etc.
+ *   ROUTING          ? ROUTING_OVERRIDE
+ *   CORS             ? CORS_ALLOW (Mendr edge)
+ *   CORS_UPSTREAM    ? CORS_ORIGIN_OVERRIDE (Service B rejected Origin)
+ *   UNKNOWN          ? generic
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AiAnalysisService {
 
-    private final LlmAnalysisClient          llmClient;
+    private final LlmAnalysisClient llmClient;
     private final AnalysisResultRepository analysisRepository;
     private final KafkaTemplate<String, Object> kafkaTemplate;
-    private final JdbcTemplate             jdbcTemplate;
-    private final FailureContextEnricher   contextEnricher;
-    private final ErrorSignatureAssembler  errorSignatureAssembler;
-    private final SafetyGateService        safetyGateService;
-    private final ApprovalDeployPublisher  approvalDeployPublisher;
-    private final LearningTraceWriter      learningTraceWriter;
+    private final JdbcTemplate jdbcTemplate;
+    private final FailureContextEnricher contextEnricher;
+    private final ErrorSignatureAssembler errorSignatureAssembler;
+    private final SafetyGateService safetyGateService;
+    private final ApprovalDeployPublisher approvalDeployPublisher;
+    private final LearningTraceWriter learningTraceWriter;
     private final com.selfhealing.analysis.service.safety.PrecedentQualityScorer precedentQualityScorer;
     private final MendrScriptGatewayClient mendrScriptGatewayClient;
     private final BehavioralClusterer behavioralClusterer;
+    private final LlmAdmissionControl llmAdmissionControl;
 
     @Value("${mendr.conversation.diagnose-url:}")
     private String diagnoseUrl;
@@ -66,27 +67,15 @@ public class AiAnalysisService {
 
     private static final String TOPIC = "api.analysis.results";
 
-    /**
-     * Appended to the pointer-bearing system prompts (schema / response). The user
-     * turn is a nested context object, so this stops the model from pointing into
-     * that wrapper (e.g. /actualRequestPayload/...) instead of the payload root.
-     */
     private static final String POINTER_GUIDANCE =
             "\n" + com.selfhealing.analysis.service.tool.AnalysisTools.POINTER_ROOT_RULE + "\n";
-
-    // ── System Prompts ────────────────────────────────────────────────────────
-    //
-    // The structured JSON user turn and the per-tool input_schema descriptions now
-    // carry the field semantics and per-rule constraints that the old flat-text
-    // glossary / negative-example prose strained to convey. System prompts are kept
-    // short: role, the single decision to make, and "call exactly one propose_* tool".
 
     private static final String SYS_SCHEMA = """
         You are an expert distributed systems engineer specialising in API request contract analysis.
         The request payload from the source service does not match the target's expected contract.
         Decide the ONE correct fix and call exactly one propose_* tool.
-        Priority: actual has FEWER fields than receiver → propose_add_default; same count + name mismatch
-        → propose_field_rename; same count + type mismatch → propose_type_coerce. Never cause data loss.
+        Priority: actual has FEWER fields than receiver ? propose_add_default; same count + name mismatch
+        ? propose_field_rename; same count + type mismatch ? propose_type_coerce. Never cause data loss.
         If a deterministicFinding with hasConfidentMatch=true is present, fill in that tool's parameters.
         """ + POINTER_GUIDANCE;
 
@@ -94,8 +83,8 @@ public class AiAnalysisService {
         You are an expert distributed systems engineer specialising in API response contract analysis.
         The provider's response body does not match what the caller expects.
         Decide the ONE primary fix and call exactly one propose_response_* tool; remaining issues are
-        fixed on later retries. Missing fields → add_default; name mismatch → field_rename; type mismatch
-        → type_coerce; nesting differences → wrap/unwrap.
+        fixed on later retries. Missing fields ? add_default; name mismatch ? field_rename; type mismatch
+        ? type_coerce; nesting differences ? wrap/unwrap.
         """ + POINTER_GUIDANCE;
 
     private static final String SYS_ROUTING = """
@@ -115,7 +104,7 @@ public class AiAnalysisService {
     private static final String SYS_CORS_UPSTREAM = """
         You are an expert web security engineer specialising in CORS.
         The target's OWN CORS filter rejected the real caller origin AFTER Mendr forwarded the request
-        (corsBlockedAt=UPSTREAM). Call propose_cors_origin_override to rewrite the outbound Origin only —
+        (corsBlockedAt=UPSTREAM). Call propose_cors_origin_override to rewrite the outbound Origin only -
         never change source identity, never call propose_cors_allow. outboundOrigin must be one of
         upstreamAllowedOrigins; callerOrigin is the real requestOrigin, never registeredBaseUrl/targetServiceUrl.
         """;
@@ -127,39 +116,65 @@ public class AiAnalysisService {
         evidence, then call exactly one propose_* tool with your best fix.
         """;
 
-    // ── Public API ────────────────────────────────────────────────────────────
-
     public AnalysisResult analyze(ApiFailureEvent event) {
+        // Enrich first so signature-level coalesce is possible. Budget is counted
+        // only after coalesce + semaphore (true LLM admit) so deferred events
+        // never burn the soft cap.
         FailureAnalysisContext ctx = contextEnricher.enrich(event);
         String category = ctx.category();
         log.info("Analysing failure {} (category: {})", event.getFailureId(), category);
 
         ErrorSignature signature = errorSignatureAssembler.assemble(ctx);
 
-        // Prefer LangGraph /diagnose when configured (verify+simulate path).
-        // Falls back to legacy category LLM path on missing URL or diagnose failure.
-        AnalysisToolResult toolResult = null;
-        if (diagnoseUrl != null && !diagnoseUrl.isBlank()) {
-            toolResult = tryDiagnose(signature, ctx);
+        // 1) Signature-level coalesce (templateId + category + changeType + jsonPath).
+        LlmAdmissionControl.Decision coal = llmAdmissionControl.admitSignature(signature);
+        if (!coal.admitted()) {
+            log.info("Skipping LLM for failure {} ({})", event.getFailureId(), coal.reason());
+            return null;
         }
-        if (toolResult == null) {
-            String systemPrompt = switch (category) {
-                case "ROUTING"           -> SYS_ROUTING;
-                case "CORS"              -> SYS_CORS;
-                case "CORS_UPSTREAM"     -> SYS_CORS_UPSTREAM;
-                case "RESPONSE_MISMATCH" -> SYS_RESPONSE;
-                case "SCHEMA_MISMATCH"   -> SYS_SCHEMA;
-                default                  -> SYS_UNKNOWN;
-            };
-            StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
-            toolResult = llmClient.analyze(systemPrompt, structured, ctx);
+
+        // 2) Semaphore only around LLM / diagnose — not enrich or persist.
+        LlmAdmissionControl.Decision permit = llmAdmissionControl.tryAcquire(signature);
+        if (!permit.admitted()) {
+            log.info("Skipping LLM for failure {} ({})", event.getFailureId(), permit.reason());
+            return null;
+        }
+
+        // 3) Budget slot counted only on full LLM admit.
+        LlmAdmissionControl.Decision budget = llmAdmissionControl.consumeBudget(event);
+        if (!budget.admitted()) {
+            log.info("Skipping LLM for failure {} ({})", event.getFailureId(), budget.reason());
+            return null;
+        }
+
+        AnalysisToolResult toolResult;
+        try {
+            toolResult = null;
+            if (diagnoseUrl != null && !diagnoseUrl.isBlank()) {
+                toolResult = tryDiagnose(signature, ctx);
+            }
+            if (toolResult == null) {
+                String systemPrompt = switch (category) {
+                    case "ROUTING" -> SYS_ROUTING;
+                    case "CORS" -> SYS_CORS;
+                    case "CORS_UPSTREAM" -> SYS_CORS_UPSTREAM;
+                    case "RESPONSE_MISMATCH" -> SYS_RESPONSE;
+                    case "SCHEMA_MISMATCH" -> SYS_SCHEMA;
+                    default -> SYS_UNKNOWN;
+                };
+                StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
+                toolResult = llmClient.analyze(systemPrompt, structured, ctx);
+            }
+        } finally {
+            llmAdmissionControl.release();
+            // Keep Redis coalesce key for TTL; only clear ThreadLocal.
+            llmAdmissionControl.clearCoalesceHold();
         }
 
         AnalysisResult result = harmonizeAndSave(toolResult, ctx, signature);
         publishResult(result, event, ctx);
         return result;
     }
-
     // ── Harmonize & persist ─────────────────────────────────────────────────────
 
     /**

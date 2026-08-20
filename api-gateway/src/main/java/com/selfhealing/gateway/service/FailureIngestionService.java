@@ -42,7 +42,16 @@ public class FailureIngestionService {
 
     public IngestOutcome ingest(IngestFailureRequest request) {
         String dedupKey = failureDedupKey(request);
-        if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(dedupKey))) {
+        int ttl = internalProperties.getFailureDedupTtlSeconds();
+        if (ttl > 0) {
+            Boolean acquired = stringRedisTemplate.opsForValue()
+                    .setIfAbsent(dedupKey, "1", Duration.ofSeconds(ttl));
+            // Only suppress on explicit false (key already held). null → fail-open.
+            if (Boolean.FALSE.equals(acquired)) {
+                log.debug("Failure ingest deduplicated for {}", routeLabel(request));
+                return IngestOutcome.deduplicated();
+            }
+        } else if (Boolean.TRUE.equals(stringRedisTemplate.hasKey(dedupKey))) {
             log.debug("Failure ingest deduplicated for {}", routeLabel(request));
             return IngestOutcome.deduplicated();
         }
@@ -77,12 +86,7 @@ public class FailureIngestionService {
         publishEvent(failure, category, attemptedUrl, origin, targetServiceUrl, registeredBase,
                 discoveredUrl, request.getCorsBlockedAt(), request.getUpstreamOriginSent(),
                 request.getCorrelationId(), request.getRequestId(),
-                problemDetail, request.getResponseHeaders());
-
-        int ttl = internalProperties.getFailureDedupTtlSeconds();
-        if (ttl > 0) {
-            stringRedisTemplate.opsForValue().set(dedupKey, "1", Duration.ofSeconds(ttl));
-        }
+                problemDetail, request.getResponseHeaders(), request.getSuppressedCount());
 
         try {
             int status = request.getErrorCode();
@@ -109,14 +113,14 @@ public class FailureIngestionService {
         ApiFailure failure = persistFailure(req, 503, "ROUTING_FAILURE", message, null);
         publishEvent(failure, "ROUTING", attemptedUrl, null, attemptedUrl,
                 enrichment.registeredBaseUrl(), enrichment.dnsProbeDiscoveryUrl(),
-                null, null, null, null, null, null);
+                null, null, null, null, null, null, null);
         return failure;
     }
 
     public ApiFailure recordCorsFailure(ProxyRequest req, String origin, int code, String message) {
         log.warn("CORS FAILURE: origin '{}' blocked → {} — {}", origin, req.getTargetService(), message);
         ApiFailure failure = persistFailure(req, code, "CORS_FAILURE", message, null);
-        publishEvent(failure, "CORS", null, origin, null, null, null, "EDGE", null, null, null, null, null);
+        publishEvent(failure, "CORS", null, origin, null, null, null, "EDGE", null, null, null, null, null, null);
         return failure;
     }
 
@@ -156,7 +160,7 @@ public class FailureIngestionService {
         ApiFailure failure = persistFailureWithResponse(req, 502, "RESPONSE_MISMATCH", message, respPayload,
                 new FailureCorrelation(correlationId, requestId, null));
         publishEvent(failure, "RESPONSE_MISMATCH", null, null, null, null, null, null, null,
-                correlationId, requestId, normalizedPd, responseHeaders);
+                correlationId, requestId, normalizedPd, responseHeaders, null);
         return failure;
     }
 
@@ -166,7 +170,7 @@ public class FailureIngestionService {
         log.warn("FAILURE [{}]: {}->{}{} → {} {}",
                 category, req.getSourceService(), req.getTargetService(), req.getEndpoint(), code, message);
         ApiFailure failure = persistFailure(req, code, type, message, responseBody);
-        publishEvent(failure, category, url, null, url, registeredBase, null, null, null, null, null, null, null);
+        publishEvent(failure, category, url, null, url, registeredBase, null, null, null, null, null, null, null, null);
         return failure;
     }
 
@@ -269,7 +273,8 @@ public class FailureIngestionService {
                                 String targetServiceUrl, String registeredBaseUrl, String dnsProbeDiscoveryUrl,
                                 String corsBlockedAt, String upstreamOriginSent,
                                 String correlationId, String requestId,
-                                Map<String, Object> problemDetail, Map<String, Object> responseHeaders) {
+                                Map<String, Object> problemDetail, Map<String, Object> responseHeaders,
+                                Integer suppressedCount) {
         kafkaTemplate.send(FAILURES_TOPIC, failure.getId().toString(), ApiFailureEvent.builder()
                 .failureId(failure.getId()).serviceA(failure.getServiceA()).serviceB(failure.getServiceB())
                 .endpoint(failure.getEndpoint()).httpMethod(failure.getHttpMethod())
@@ -286,14 +291,17 @@ public class FailureIngestionService {
                 .traceparent(failure.getTraceparent())
                 .problemDetail(problemDetail)
                 .responseHeaders(responseHeaders)
+                .suppressedCount(suppressedCount)
                 .build());
         log.info("Published [{}] failure event {}", category, failure.getId());
     }
 
     static String failureDedupKey(IngestFailureRequest request) {
+        String category = normalizeCategory(request.getFailureCategory());
         return com.selfhealing.gateway.tenant.TenantKeys.scoped(
                 FAILURE_DEDUP_KEY_PREFIX + request.getSourceService() + ":"
-                + request.getTargetService() + ":" + request.getEndpoint());
+                + request.getTargetService() + ":" + request.getEndpoint()
+                + ":" + category);
     }
 
     private static String routeLabel(IngestFailureRequest request) {
