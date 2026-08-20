@@ -1,40 +1,161 @@
 # Mendr Control Plane
 
-This repository contains the cloud/on-prem control-plane services for Mendr:
+Cloud / on-prem control plane for Mendr: service registry, snapshot sync, failure
+ingestion, LLM-assisted diagnosis under a hard admission gate, conformal safety,
+rule deploy, and the operator dashboard.
 
-- `mendr-minimize` (Rust remediation minimization sidecar)
-- `api-gateway`
-- `ai-analysis-service`
-- `rule-engine`
-- `notification-service`
-- `frontend`
-- supporting infrastructure: PostgreSQL, Redis, Zookeeper, Kafka
+The edge lives in **`mendr-data-plane`**. Proxy traffic does not traverse this
+plane except as a **Java fallback**.
 
-## Purpose
+## Services
 
-The control plane owns:
+| Service | Port | Role |
+|---------|------|------|
+| `api-gateway` | 8095 | Registry, snapshots, sync, failure ingest, Java proxy, portal/GitOps APIs |
+| `ai-analysis-service` | 8082 | Failure analysis, LLM admission, safety gate, conformal, learning stack |
+| `conversation-engine` | 8085 | Chat / `/diagnose` MendrScript authoring over MCP |
+| `rule-engine` | 8084 | Approved-rule storage, disable, precedent commit |
+| `notification-service` | 8083 | Operator notifications |
+| `mendr-minimize` | 8099 | Rust sidecar: shrink transform programs (EqSat / egg) |
+| `frontend` | 3000 | Dashboard |
+| Postgres (pgvector), Redis, Kafka | — | Source of truth, cache/pubsub, async pipeline |
 
-- service registration and contracts (including optional `allowedCallerOrigins` per service)
-- failure ingestion and response validation
-- AI analysis
-- rule approval and deployment
-- dashboard UI
+---
 
-The separate `mendr-data-plane` repository should be deployed at the customer edge and forwards registration calls here while keeping proxy traffic local.
+## Core philosophy
 
-### Service registration CORS
+1. **Deterministic over probabilistic** — LLMs propose hypotheses; output is
+   constrained into closed-opcode MendrScript, minimized, verified, and gated.
+   The edge never runs raw model text.
+2. **Observe at the edge, decide here, enforce from a local snapshot** — analysis
+   is async (Kafka); the data plane keeps serving on LKG Redis snapshots if this
+   plane or Redis is degraded.
+3. **Gate the model, not Kafka** — over-budget / coalesced work is **acked and
+   deferred** (metric + log), never nack/retried into an LLM storm.
 
-When registering a service, include optional `allowedCallerOrigins` in the JSON body:
+---
 
-```json
-{
-  "name": "payment-service",
-  "baseUrl": "http://localhost:8091",
-  "allowedCallerOrigins": ["http://localhost:8090"]
-}
+## Topology
+
+```mermaid
+flowchart TB
+  subgraph customers [Customer networks]
+    C[Clients]
+    DP[mendr-gateway OpenResty]
+    ER[(Edge Redis)]
+    US[Upstreams]
+    C --> DP
+    DP --> ER
+    DP --> US
+  end
+
+  subgraph cp [Control plane]
+    AG[api-gateway]
+    AI[ai-analysis-service]
+    CE[conversation-engine]
+    RE[rule-engine]
+    MIN[mendr-minimize]
+    FE[frontend]
+    PG[(Postgres + RLS)]
+    RD[(Redis)]
+    KF[Kafka]
+  end
+
+  DP -->|"long-poll /v1/sync/routeconfig"| AG
+  DP -->|"POST /api/internal/failures"| AG
+  AG --> PG
+  AG --> RD
+  AG --> KF
+  AG --> MIN
+  KF --> AI
+  AI --> CE
+  AI --> RE
+  RE --> AG
+  FE --> AG
+  FE --> AI
 ```
 
-The control plane stores this on the service record and syncs it into `cors_rules`. The edge data plane enforces it from route snapshots (no per-request control-plane call).
+---
+
+## Self-healing lifecycle (current)
+
+1. **Detect** — edge sees 4xx/5xx (or splice abort after flush → category `SPLICE`).
+2. **Edge telemetry** — `log.lua` dedups (`source:target:endpoint_template:category`),
+   redacts PII, POSTs `IngestFailureRequest` (optional `suppressedCount`).
+3. **Ingest** — `FailureIngestionService` Redis `SET NX` on
+   `mendr:fail-dedup:{source}:{target}:{endpoint}:{category}` (tenant-scoped),
+   persists, publishes `api.failures`.
+4. **Admit LLM** — `LlmAdmissionControl`:
+   - enrich + assemble `ErrorSignature`
+   - coalesce key
+     `mendr:analyze-coalesce:{tenant}:{templateId}:{category}:{changeType}:{jsonPath}`
+   - in-process semaphore (default 2) **only around** LLM / diagnose
+   - global/tenant budget counted **only on full admit**
+   - defer → `null` result, Kafka ack, `mendr_analysis_deferred_total`
+5. **Diagnose** — context + topology RCA + precedents + LLM tools (optional
+   conversation-engine `/diagnose`).
+6. **Safety gate** — conformal / Venn-Abers / refuse-auto-heal → `PENDING_APPROVAL`
+   or `APPROVED`. Auto-apply defaults **off**.
+7. **Minimize** — `mendr-minimize` shrinks the program when enabled.
+8. **Deploy** — rule-engine / gateway materializes into the next
+   `RouteConfigSnapshot`; edge lazy-syncs on `last_version` mismatch.
+
+Kafka hygiene (`ai-analysis-service`): listener `concurrency=1`,
+`max.poll.records=5`, `max.poll.interval.ms=600000`. Defer and unexpected
+errors are not rethrown into retry storms.
+
+---
+
+## Snapshots & capabilities
+
+`RouteConfigSnapshotPublisher` builds Lua-safe JSON snapshots (programs +
+gateway policy overlays), capability-strips fields the edge did not advertise,
+and serves `GET /v1/sync/routeconfig?since=&caps=` (long-poll ~30s → 304 or payload).
+
+Capability tokens: `v2`, `ingress`, `traffic`, `ratelimit`, `authz`, `cache`,
+`metrics`, `ai`, `waf`, `splice`.
+
+- No `v2` → DSL-only (`ops[]`) routes withheld (not silently no-op’d).
+- No `splice` → `planClass` stripped, `streamable=false` (DOM on the edge).
+
+`PlanClassClassifier` ranks programs:
+`PASSTHROUGH` < `PREFILTERABLE` < `FORWARD_ONLY` < `BOUNDED_WINDOW` < `UNBOUNDED`
+— the edge picks splice vs DOM from that rank.
+
+---
+
+## API surface (api-gateway)
+
+- `/api/services` — register service, contracts, OpenAPI import, manifests
+- `/api/services/{name}/instances` — upstream pool
+- `/api/gateway/rate-limit-policies`, `/api/gateway/ai-routes`
+- `/api/gateway/gitops/manifest` — push `mendr.yaml`
+- `/api/portal/*` — catalog, specs, self-service keys, usage
+- `/api/internal/failures`, `/api/internal/otlp/v1/traces`
+- `/api/gateway/proxy` — Java fallback for cold/degraded edges
+- `/v1/sync/routeconfig`
+
+Service registration may include optional `allowedCallerOrigins`; CORS is synced
+into snapshots and enforced on the edge (no per-request control-plane call).
+
+---
+
+## Multi-tenancy & auth
+
+Isolation is Postgres **FORCE RLS** as `app_user` (superusers bypass RLS — do not
+run the app as superuser).
+
+- `TenantContext` + `SET app.current_tenant` on connection borrow
+- Humans: WorkOS JWT (`org_id` → tenant). `MENDR_AUTH_ENFORCE` defaults **false**
+- Machines/edges: `X-Api-Key` `<prefix>.<secret>` (hashed); sync scoped to that tenant
+- Kafka: `tenant_id` header; Redis keys namespaced `t:{tenantId}:`
+
+See **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)** for the full design.
+
+Service-dependency graph + abstaining RCA:
+**[docs/SERVICE_TOPOLOGY_RCA.md](docs/SERVICE_TOPOLOGY_RCA.md)**.
+
+---
 
 ## Run
 
@@ -42,199 +163,96 @@ The control plane stores this on the service record and syncs it into `cors_rule
 docker compose up -d --build
 ```
 
-## Required environment
+### Required environment
 
-- `LLM_PROVIDER` — `anthropic` (default) or `gemini`. Set the API key for the active provider:
+- `LLM_PROVIDER` — `anthropic` (default) or `gemini` (same value for
+  `ai-analysis-service` and `conversation-engine`)
   - Anthropic: `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL`
-  - Gemini: `GEMINI_API_KEY`, optional `GEMINI_MODEL` (default `gemini-2.0-flash`)
-- Use the **same** `LLM_PROVIDER` value for `ai-analysis-service` and `conversation-engine` so failure analysis and MendrScript chat use the same LLM backend.
-- `GATEWAY_INTERNAL_API_KEY` for trusted edge/control-plane calls and MendrScript
-  chat persistence (`conversation-engine` → `ai-analysis-service` internal APIs).
-  Set the same value in `.env` for `api-gateway`, `ai-analysis-service`, and
-  `conversation-engine`.
+  - Gemini: `GEMINI_API_KEY`, optional `GEMINI_MODEL`
+- `GATEWAY_INTERNAL_API_KEY` — shared internal key across gateway, analysis,
+  conversation-engine
 
-### Chat persistence migration
+### LLM admission (ai-analysis-service)
 
-If your Postgres volume was created before `init_v3_analysis_conversations.sql`
-was added, apply it manually (idempotent):
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v3_analysis_conversations.sql
+```yaml
+mendr.analysis.llm:
+  semaphore: 2
+  coalesce-ttl-seconds: 30
+  global-per-minute: 30
+  tenant-per-minute: 10
 ```
 
-### ErrorSignature / GraphRAG migration (Phases 4–6)
+Env overrides: `MENDR_ANALYSIS_LLM_SEMAPHORE`, `MENDR_ANALYSIS_LLM_COALESCE_TTL`,
+`MENDR_ANALYSIS_LLM_GLOBAL_PER_MIN`, `MENDR_ANALYSIS_LLM_TENANT_PER_MIN`.
 
-Compose now uses **`pgvector/pgvector:pg15`** (not stock `postgres:15-alpine`) and
-mounts `infra/init_error_signature.sql` + `infra/init_v5_error_precedents.sql`
-(`CREATE EXTENSION vector`, `error_precedents`, tenant RLS).
+Unit + Testcontainers Redis IT:
+`LlmAdmissionControlTest`, `LlmAdmissionControlRedisIT` (skips without Docker).
 
-**Existing volumes do not re-run init scripts.** Either recreate the volume, or
-apply manually:
-
-```powershell
-# Requires a pgvector-capable image already running
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_error_signature.sql
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v4_openapi.sql
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v5_error_precedents.sql
-```
-
-If the volume was created on non-pgvector Postgres, recreate it (e.g.
-`docker compose down -v` then `up`) so the vector extension can install.
-
-Fresh `docker compose up` on a new volume applies `init.sql` → `init_v2_*` →
-`init_v3_*` → `init_v4_*` → `init_v5_*` → `init_v6_*` → `init_v7_*` automatically.
-
-### Self-learning substrate (Phase 0)
-
-Existing volumes do not re-run init scripts. Apply manually (idempotent):
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v6_phase8_moat.sql
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v7_self_learning.sql
-```
-
-Creates `learning_traces`, `counterexample_suite`, and `offline_regression_payloads`
-(with `scrub_status` PENDING/COMPLETED/FAILED for async PII scrub).
-
-### Phase 1 ACE + RegressionHarness
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v8_phase1_regression_ace.sql
-```
-
-Creates `ace_playbook` and `regression_harness_runs`.
-
-### Phase 2 topology-scoped repair heuristics
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v9_phase2_repair_heuristics.sql
-```
-
-Creates `repair_heuristics` (required `topology_scope`; ExpeL Reflector/Curator).
-
-### Phase 3 LILO skills + MetaMemory
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v10_phase3_lilo_metamemory.sql
-```
-
-Creates `skill_library`, `meta_memory`, and `error_precedents.archived_at` (Semantic Memory archive).
-
-### Phase 5 EvolveMem retrieval config
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v11_phase5_evolvemem.sql
-```
-
-Creates versioned `retrieval_config` (topK / thresholds / decay; harness promote+revert).
-
-### Phase 6 GEPA compiled prompts
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v12_phase6_gepa.sql
-```
-
-Creates `compiled_prompts`. Enable with `MENDR_GEPA_ENABLED=true` and
-`MENDR_DSPY_PII_SCRUB_APPROVED=true` after scrub is proven (≥5 COMPLETED offline payloads).
-Optional DSPy path: `MENDR_DSPY_ENABLED=true` + `MENDR_CONVERSATION_GEPA_COMPILE_URL`.
-
-### Phase 7 Cross-tenant pool (opt-in)
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v13_phase7_cross_tenant.sql
-```
-
-Creates `cross_tenant_opt_in`, `cross_tenant_pool`, `cross_tenant_imports`.
-**Default OFF.** Enable only after contractual privacy review:
-
-```
-MENDR_CROSS_TENANT_ENABLED=true
-```
-
-Then `POST /internal/cross-tenant/opt-in` with explicit privacy attestation:
-
-```json
-{
-  "publishEnabled": true,
-  "importEnabled": true,
-  "privacyReviewed": true,
-  "reviewedBy": "privacy-officer@example.com",
-  "notes": "contract X reviewed YYYY-MM-DD"
-}
-```
-
-Bare toggles without `privacyReviewed=true` + `reviewedBy` are rejected.
-When `MENDR_AUTH_ENFORCE=true`, `/internal/cross-tenant/**` requires authentication.
-Publish anonymizes skills/heuristics/playbook; import requires local critic + RegressionHarness.
-Diagnose and Tier-3/MCP agents never see raw pool payloads — use
-`GET /internal/cross-tenant/pool` + `POST /import` only; after ACCEPTED import,
-local `match_skill` / heuristics / playbook serve diagnose.
-
-### Remediation minimization (Rust sidecar)
-
-```powershell
-docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v15_minimization_pairs.sql
-```
-
-Service `mendr-minimize` runs L2 necessity (ddmin-over-ops) + L3 algebraic/`egg` + L4
-size-gated `prove_minimal`. **api-gateway** exposes `POST /api/internal/mendrscript/minimize`
-(Java mandatory re-verify + fallback). MCP tool: `minimize_program`. The conversation-engine
-runs minimization **after critics and before present**, so the program a user chats about /
-approves is already minimal.
+### Remediation minimization
 
 ```
 MENDR_MINIMIZE_ENABLED=true
 MENDR_MINIMIZE_BASE_URL=http://mendr-minimize:8099
 ```
 
-Preference pairs `(chosen=minimal, rejected=draft)` land in `minimization_preference_pairs`
-when **op counts** shrink (same-size valueMutating wins are presented but not preference-logged).
-DPO training still deferred. See `mendr-minimize/README.md` and CI workflow `mendr-minimize.yml`.
+See `mendr-minimize/README.md`.
 
-## Multi-tenancy, isolation & auth
+---
 
-Isolation is enforced by Postgres Row-Level Security. `infra/init_v2_multitenancy.sql`
-(applied after `init.sql`) adds a `tenants` registry, `users`/`memberships`,
-per-tenant `api_keys`, a global drift corpus, a `tenant_id` column + fail-closed
-RLS policy on every tenant-scoped table, and a least-privilege `app_user` role.
+## Postgres migrations (existing volumes)
 
-Key operational facts:
+Compose mounts init scripts in order on **new** volumes only. For existing
+volumes, apply manually (idempotent), for example:
 
-- The api-gateway connects as **`app_user`** (non-superuser) so RLS is actually
-  enforced — superusers bypass it. Configure via `APP_DB_USERNAME` / `APP_DB_PASSWORD`
-  (defaults `app_user` / `app_secret`; change in production).
-- Each request binds a tenant (`app.current_tenant`) for the connection. When no
-  credential is present it falls back to the default tenant
-  (`00000000-0000-0000-0000-000000000001`), preserving single-tenant behavior.
-  Set `MENDR_TENANCY_FALLBACK_TO_DEFAULT=false` for strict isolation.
-- **Human auth (WorkOS):** set `MENDR_AUTH_WORKOS_JWKS_URI` (+ `_ISSUER`, `_AUDIENCE`)
-  to validate dashboard JWTs; the `org_id` claim maps to a tenant via `tenants.workos_org_id`.
-- **Machine/edge auth:** per-tenant API keys (`<prefix>.<secret>`, stored hashed)
-  presented as `X-Api-Key` or `Authorization: Bearer mendr_...`.
-- **Enforcement:** `MENDR_AUTH_ENFORCE=false` (default) leaves endpoints open but
-  still binds tenant context from any credential — a safe incremental rollout.
-  Set `true` to require auth on all non-health endpoints.
+```powershell
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v3_analysis_conversations.sql
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_error_signature.sql
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v5_error_precedents.sql
+docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v7_self_learning.sql
+# … through init_v15_minimization_pairs.sql as needed
+```
 
-All four services (api-gateway, ai-analysis, rule-engine, notification) connect as
-`app_user` and are tenant-aware: writes stamp `tenant_id` from context (satisfying
-RLS `WITH CHECK`), Kafka messages carry a `tenant_id` header, Redis keys are
-namespaced `t:{tenantId}:`, and a tenant-aware sweeper expires TTL rules across all
-tenants. See **[docs/MULTI_TENANCY.md](docs/MULTI_TENANCY.md)** for the full design,
-configuration reference, verification, and **the frontend changes still required**
-to enable human (WorkOS) auth.
+Compose uses **`pgvector/pgvector:pg15`**. Volumes created on non-pgvector images
+must be recreated for the vector extension.
 
-## Service topology & zero-hallucination RCA
+### Notable init modules
 
-A native-PostgreSQL, SCD2 service-dependency graph (declared + observed + causal edges) drives
-deterministic blast-radius / root-cause / drift queries, and a verified, cited, **abstaining**
-LLM root-cause narrative that can only select from the enumerated real paths. See
-**[docs/SERVICE_TOPOLOGY_RCA.md](docs/SERVICE_TOPOLOGY_RCA.md)** for the data model, write/read
-paths, MCP tools, config flags, and the differential CTE + faithfulness test harnesses.
+| Script area | Contents |
+|-------------|----------|
+| Multitenancy | tenants, RLS, `app_user`, api_keys |
+| ErrorSignature / precedents | pgvector, GraphRAG-style precedents |
+| Self-learning | ACE, heuristics, LILO skills, MetaMemory, EvolveMem, GEPA, cross-tenant (opt-in) |
+| Topology | SCD2 dependency graph (`init_v14`) |
+| Minimization | preference pairs for shrinker |
+
+Cross-tenant pool defaults **OFF** (`MENDR_CROSS_TENANT_ENABLED`); requires
+explicit privacy attestation on opt-in.
+
+---
 
 ## Ports
 
-- `3000` dashboard
-- `8095` api-gateway
-- `8082` ai-analysis-service
-- `8083` notification-service
-- `8084` rule-engine
+| Port | Service |
+|------|---------|
+| 3000 | Dashboard |
+| 8095 | api-gateway |
+| 8082 | ai-analysis-service |
+| 8083 | notification-service |
+| 8084 | rule-engine |
+| 8085 | conversation-engine |
+| 8099 | mendr-minimize |
+
+---
+
+## Mental model
+
+1. Register services/contracts (or push a manifest).
+2. Control plane compiles programs + policy into a **capability-gated snapshot**.
+3. Edge long-polls, stores snapshots in **local Redis**, proxies **locally**.
+4. On failures (and splice aborts), edge reports with template + category dedup.
+5. Analysis proposes MendrScript under admission control; safety gate decides
+   auto-deploy vs HITL.
+6. Next sync, the edge lazy-reloads and runs the new program on splice or DOM.
+
+That loop — **observe at the edge, decide in the control plane, enforce from a
+local snapshot** — is the current design of Mendr.
