@@ -87,6 +87,17 @@
             <artifactId>testcontainers</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- Production MendrScriptVerifier + MendrScriptExecutor for InteropBench Mode A -->
+        <dependency>
+            <groupId>com.selfhealing</groupId>
+            <artifactId>api-gateway</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>mockwebserver</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

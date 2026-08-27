@@ -88,7 +88,9 @@ def _provisional_confidence(
 
 def _should_diagnose_first(complexity: dict | None, signature: dict) -> bool:
     complexity = complexity or {}
-    if complexity.get("deterministicDiff"):
+    # D5: skip diagnose-first only when deterministic coverage is *complete*.
+    # Partial registry hits set deterministicPartial and must still diagnose residuals.
+    if complexity.get("deterministicDiff") and not complexity.get("deterministicPartial", False):
         return False
     category = (complexity.get("category") or signature.get("category") or "").upper()
     if category in ("UNKNOWN", ""):

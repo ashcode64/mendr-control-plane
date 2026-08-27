@@ -181,7 +181,14 @@ public class AnthropicAnalysisClient implements LlmAnalysisClient {
                 .block();
 
         try {
-            return objectMapper.readTree(responseBody);
+            JsonNode tree = objectMapper.readTree(responseBody);
+            JsonNode usage = tree.path("usage");
+            if (usage.isObject()) {
+                int in = usage.path("input_tokens").asInt(0);
+                int out = usage.path("output_tokens").asInt(0);
+                com.selfhealing.analysis.evaluation.InteropBenchUsageLedger.recordHttpCall(in, out);
+            }
+            return tree;
         } catch (Exception e) {
             throw new IllegalStateException("Could not parse Anthropic response: " + e.getMessage(), e);
         }

@@ -1,0 +1,26 @@
+name: InteropBench Mode A (PR CI)
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, "feat/**"]
+
+jobs:
+  mode-a:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Install api-gateway (plain jar for MendrScript VM)
+        working-directory: api-gateway
+        run: mvn -B -DskipTests install
+      - name: Mode A gates CI
+        working-directory: ai-analysis-service
+        run: >
+          mvn -B
+          -Dtest=InteropBenchModeATest,InteropBenchBaselineAcceptanceTest,UnitDateDetectorTest,DeterministicProposalGateTest
+          test

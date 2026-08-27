@@ -5,6 +5,7 @@ import com.selfhealing.analysis.model.AnalysisResult;
 import com.selfhealing.analysis.repository.AnalysisResultRepository;
 import com.selfhealing.analysis.service.context.StructuredContextAssembler;
 import com.selfhealing.analysis.service.context.StructuredFailureContext;
+import com.selfhealing.analysis.service.safety.DeterministicProposalGate;
 import com.selfhealing.analysis.service.safety.SafetyGateResult;
 import com.selfhealing.analysis.service.safety.SafetyGateService;
 import com.selfhealing.analysis.service.safety.SafetyScore;
@@ -52,6 +53,7 @@ public class AiAnalysisService {
     private final FailureContextEnricher contextEnricher;
     private final ErrorSignatureAssembler errorSignatureAssembler;
     private final SafetyGateService safetyGateService;
+    private final DeterministicProposalGate deterministicProposalGate;
     private final ApprovalDeployPublisher approvalDeployPublisher;
     private final LearningTraceWriter learningTraceWriter;
     private final com.selfhealing.analysis.service.safety.PrecedentQualityScorer precedentQualityScorer;
@@ -150,10 +152,16 @@ public class AiAnalysisService {
         AnalysisToolResult toolResult;
         try {
             toolResult = null;
-            if (diagnoseUrl != null && !diagnoseUrl.isBlank()) {
+            boolean registryHit = ctx.schemaDiff() != null && ctx.schemaDiff().isRegistryDeterministic();
+            boolean registryComplete = registryHit && ctx.schemaDiff().coverageComplete();
+            // Promoted path only: complete registry + auto-apply may skip diagnose.
+            // Shadow (auto-apply false): always run LLM/diagnose for D6 attribution.
+            boolean skipDiagnose = registryComplete && deterministicProposalGate.isDeterministicAutoApplyEnabled()
+                    && !deterministicProposalGate.isShadowMode();
+            if (!skipDiagnose && diagnoseUrl != null && !diagnoseUrl.isBlank()) {
                 toolResult = tryDiagnose(signature, ctx);
             }
-            if (toolResult == null) {
+            if (toolResult == null && !skipDiagnose) {
                 String systemPrompt = switch (category) {
                     case "ROUTING" -> SYS_ROUTING;
                     case "CORS" -> SYS_CORS;
@@ -164,6 +172,9 @@ public class AiAnalysisService {
                 };
                 StructuredFailureContext structured = StructuredContextAssembler.assemble(ctx);
                 toolResult = llmClient.analyze(systemPrompt, structured, ctx);
+            }
+            if (toolResult == null && registryHit) {
+                toolResult = toolResultFromRegistry(ctx.schemaDiff());
             }
         } finally {
             llmAdmissionControl.release();
@@ -313,37 +324,88 @@ public class AiAnalysisService {
                 signature != null ? signature.changeType() : null,
                 endpoint);
         meta.put("precedentQuality", precedentQuality);
-        SafetyScore safetyScore = safetyGateService.buildScore(
-                generationConfidence,
-                deterministicAgreement,
-                metamorphicPassRate,
-                signature != null ? signature.specTrust() : null,
-                precedentQuality,
-                semanticConsistency,
-                causalVerification);
-        SafetyGateResult gate = safetyGateService.evaluate(
-                refuseAutoHeal, validationFailed, routingUndeployable, effect.effective(),
-                hitlReview, safetyScore);
-        gate.mergeInto(meta);
-        // First-class calibrated fields for CE/UI (also inside safetyScore).
-        meta.put("pVa", safetyScore.pVa());
-        meta.put("p0", safetyScore.p0());
-        meta.put("p1", safetyScore.p1());
-        meta.put("intervalWidth", safetyScore.intervalWidth());
-        meta.put("vennAbersFitted", safetyScore.vennAbersFitted());
-        meta.put("rawCorrectProbability", safetyScore.rawCorrectProbability());
+
+        SafetyGateResult gate;
+        SafetyScore safetyScore;
+        double confidence;
+        if (isRegistryDeterministicProposal(transformationRules, ctx)) {
+            String kind = ctx.schemaDiff() != null ? ctx.schemaDiff().kind().name() : "UNIT_SCALE";
+            String ruleId = ctx.schemaDiff() != null ? ctx.schemaDiff().registryRuleId() : null;
+            Object prov = transformationRules.get("_provenance");
+            if (prov instanceof Map<?, ?> pm && pm.get("registryRuleId") != null) {
+                ruleId = String.valueOf(pm.get("registryRuleId"));
+            }
+            if (prov instanceof Map<?, ?> pm && pm.get("kind") != null) {
+                kind = String.valueOf(pm.get("kind"));
+            }
+            boolean d7Fired = ctx.schemaDiff() != null && ctx.schemaDiff().isRegistryDeterministic()
+                    && ctx.schemaDiff().hasDeterministicRule();
+
+            // D1: closed-opcode verify + simulate (+ metamorphic) — not RuleValidator alone.
+            Map<String, Object> programForGate = new LinkedHashMap<>(transformationRules);
+            programForGate.remove("_provenance");
+            boolean verifierOk = runDeterministicVerify(programForGate);
+            boolean simulationOk = runDeterministicSimulate(programForGate, event.getRequestPayload())
+                    && effect.effective();
+            Double metaRate = extractMetamorphicPassRate(metamorphicMeta);
+            boolean metamorphicOk = deterministicProposalGate.metamorphicPasses(metaRate)
+                    || runDeterministicMetamorphic(programForGate, event.getRequestPayload());
+
+            // D6 shadow attribution: when LLM/diagnose also produced a program, record pair.
+            if (deterministicProposalGate.isShadowMode() && toolResult != null
+                    && toolResult.transformationRules() != null) {
+                Map<String, Object> shadow = buildShadowComparison(
+                        programForGate, toolResult.transformationRules());
+                meta.put("shadowComparison", shadow);
+                log.info("SHADOW deterministic vs LLM for {}: match={}",
+                        event.getFailureId(), shadow.get("programsMatch"));
+            }
+
+            gate = deterministicProposalGate.evaluate(
+                    refuseAutoHeal, validationFailed, routingUndeployable, effect.effective(),
+                    d7Fired, ruleId, kind, verifierOk, simulationOk, metamorphicOk);
+            gate.mergeInto(meta);
+            meta.put("generationConfidenceSource", "BY_CONSTRUCTION");
+            meta.put("s1FromLogprobs", false);
+            safetyScore = safetyGateService.buildScore(
+                    1.0, 1.0, metamorphicPassRate,
+                    signature != null ? signature.specTrust() : null,
+                    precedentQuality, 1.0,
+                    CausalVerification.score(verificationMeta, simulationMeta));
+            meta.put("pVa", null);
+            meta.put("rawCorrectProbability", 1.0);
+            confidence = 1.0;
+        } else {
+            safetyScore = safetyGateService.buildScore(
+                    generationConfidence,
+                    deterministicAgreement,
+                    metamorphicPassRate,
+                    signature != null ? signature.specTrust() : null,
+                    precedentQuality,
+                    semanticConsistency,
+                    causalVerification);
+            gate = safetyGateService.evaluate(
+                    refuseAutoHeal, validationFailed, routingUndeployable, effect.effective(),
+                    hitlReview, safetyScore);
+            gate.mergeInto(meta);
+            meta.put("pVa", safetyScore.pVa());
+            meta.put("p0", safetyScore.p0());
+            meta.put("p1", safetyScore.p1());
+            meta.put("intervalWidth", safetyScore.intervalWidth());
+            meta.put("vennAbersFitted", safetyScore.vennAbersFitted());
+            meta.put("rawCorrectProbability", safetyScore.rawCorrectProbability());
+            confidence = safetyScore.displayConfidence();
+        }
 
         AnalysisResult.AnalysisStatus status = gate.status();
-        // Display: pVa when fitted, else rawCorrectProbability (never bootstrap 0.5).
-        double confidence = safetyScore.displayConfidence();
 
         AnalysisResult result = AnalysisResult.builder()
                 .failureId(event.getFailureId())
                 .rootCause(rootCause)
                 .confidence(confidence)
-                .calibratedConfidence(safetyScore.pVa())
-                .confidenceIntervalWidth(safetyScore.intervalWidth())
-                .vennAbersFitted(safetyScore.vennAbersFitted())
+                .calibratedConfidence(safetyScore != null ? safetyScore.pVa() : null)
+                .confidenceIntervalWidth(safetyScore != null ? safetyScore.intervalWidth() : null)
+                .vennAbersFitted(safetyScore != null && safetyScore.vennAbersFitted())
                 .transformationRules(transformationRules)
                 .suggestedPermanentFix(permanentFix)
                 .aiModel(toolResult.model())
@@ -355,10 +417,27 @@ public class AiAnalysisService {
         learningTraceWriter.linkAnalysisId(event.getFailureId(), result.getId());
 
         // Plan 8.0 step 5: conformal accept + auto-apply → same deploy path as human Approve.
+        // Deterministic auto-apply uses the same publisher when DeterministicProposalGate APPROVES.
         if (status == AnalysisResult.AnalysisStatus.APPROVED) {
-            approvalDeployPublisher.publishApproved(result, "safety-gate-auto-apply");
+            String deploySource = meta.get("gatePath") != null
+                    && "DETERMINISTIC_REGISTRY".equals(String.valueOf(meta.get("gatePath")))
+                    ? "deterministic-gate-auto-apply"
+                    : "safety-gate-auto-apply";
+            approvalDeployPublisher.publishApproved(result, deploySource);
         }
         return result;
+    }
+
+    static boolean isRegistryDeterministicProposal(Map<String, Object> rules, FailureAnalysisContext ctx) {
+        if (ctx != null && ctx.schemaDiff() != null && ctx.schemaDiff().isRegistryDeterministic()) {
+            return true;
+        }
+        if (rules == null) return false;
+        Object prov = rules.get("_provenance");
+        if (prov instanceof Map<?, ?> m) {
+            return "DETERMINISTIC_REGISTRY".equals(String.valueOf(m.get("source")));
+        }
+        return false;
     }
 
     @SuppressWarnings("unchecked")
@@ -555,6 +634,15 @@ public class AiAnalysisService {
                     ctx.schemaDiff(), ctx.responseDiff());
             Map<String, Object> complexity = new LinkedHashMap<>();
             complexity.put("deterministicDiff", deterministic);
+            // D5: complete registry coverage → skip diagnose-first; partial → still diagnose.
+            boolean partial = ctx.schemaDiff() != null
+                    && ctx.schemaDiff().hasDeterministicRule()
+                    && !ctx.schemaDiff().coverageComplete();
+            complexity.put("deterministicPartial", partial);
+            if (ctx.schemaDiff() != null && ctx.schemaDiff().isRegistryDeterministic()) {
+                complexity.put("registryKind", ctx.schemaDiff().kind().name());
+                complexity.put("registryRuleId", ctx.schemaDiff().registryRuleId());
+            }
             complexity.put("category", ctx.category() != null ? ctx.category() : "UNKNOWN");
             complexity.put("multiHop", multiHop);
             complexity.put("driftedFields", driftedFields);
@@ -883,14 +971,47 @@ public class AiAnalysisService {
     /**
      * When structured schema diff finds a clear primary issue, prefer that rule over
      * a conflicting AI suggestion (e.g. FIELD_RENAME when amount is simply missing).
-     * Verified MendrScript programs ({@code DSL_PROGRAM}) from /diagnose are preserved —
-     * they already passed verify_program + simulate_transform.
+     * D4: closed-registry UNIT_SCALE / DATE_FORMAT with complete coverage is authoritative
+     * even over a verified diagnose DSL_PROGRAM for those mismatches.
+     * Partial coverage: keep detector ops, preserve diagnose residuals (never drop silently).
      */
     private Map<String, Object> harmonizeWithSchemaDiff(
             Map<String, Object> aiRules, SchemaDiffResult schemaDiff, UUID failureId) {
 
         if (schemaDiff == null || !schemaDiff.hasDeterministicRule()) {
             return aiRules;
+        }
+        if (schemaDiff.isRegistryDeterministic() && schemaDiff.coverageComplete()) {
+            log.info("Registry detector authoritative for {} ({})", failureId, schemaDiff.kind());
+            return schemaDiff.toTransformationRules();
+        }
+        if (schemaDiff.isRegistryDeterministic() && !schemaDiff.coverageComplete()) {
+            Map<String, Object> detector = schemaDiff.toTransformationRules();
+            log.info("Registry detector PARTIAL for {} ({}) — merging with diagnose residual",
+                    failureId, schemaDiff.kind());
+            if (aiRules == null || aiRules.isEmpty() || isEmptyRulePayload(aiRules)) {
+                Map<String, Object> partial = new LinkedHashMap<>(detector);
+                partial.put("_deterministicPartial", true);
+                partial.put("_diagnoseResidual", "none");
+                return partial;
+            }
+            // Keep diagnose program but tag residual; detector ops win on conflict later via provenance.
+            Map<String, Object> merged = new LinkedHashMap<>(aiRules);
+            merged.put("_deterministicPartial", true);
+            merged.put("_diagnoseResidual", true);
+            merged.put("_detectorProgram", detector);
+            if (isDslProgram(aiRules) && detector.get("ops") instanceof List<?> detOps) {
+                // Prepend detector ops; diagnose fills residuals.
+                List<Object> combined = new ArrayList<>();
+                combined.addAll(detOps);
+                Object aiOps = aiRules.get("ops");
+                if (aiOps instanceof List<?> list) combined.addAll(list);
+                merged.put("ops", combined);
+                merged.put("type", "DSL_PROGRAM");
+                merged.put("schemaVersion", "mendrscript/v1");
+                merged.put("_provenance", detector.get("_provenance"));
+            }
+            return merged;
         }
         if (isDslProgram(aiRules)) {
             return aiRules;
@@ -911,7 +1032,6 @@ public class AiAnalysisService {
             return deterministic;
         }
 
-        // Same type — merge deterministic details if AI omitted them
         Map<String, Object> merged = new LinkedHashMap<>(aiRules);
         deterministic.forEach((key, value) -> {
             if (!"type".equals(key) && (merged.get(key) == null
@@ -920,6 +1040,97 @@ public class AiAnalysisService {
             }
         });
         return merged;
+    }
+
+    private AnalysisToolResult toolResultFromRegistry(SchemaDiffResult diff) {
+        Map<String, Object> rules = diff.toTransformationRules();
+        return new AnalysisToolResult(
+                AnalysisToolResult.Source.MOCK,
+                "deterministic-registry",
+                "DSL_PROGRAM",
+                rules,
+                "Closed-registry detector: " + diff.summary(),
+                1.0,
+                null);
+    }
+
+    private boolean runDeterministicVerify(Map<String, Object> program) {
+        try {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("schemaVersion", program.getOrDefault("schemaVersion", "mendrscript/v1"));
+            body.put("ops", program.get("ops"));
+            Map<String, Object> result = mendrScriptGatewayClient.verify(body);
+            return result != null && Boolean.TRUE.equals(result.get("valid"));
+        } catch (Exception e) {
+            log.warn("deterministic verify failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean runDeterministicSimulate(Map<String, Object> program, Object payload) {
+        try {
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("program", Map.of(
+                    "schemaVersion", program.getOrDefault("schemaVersion", "mendrscript/v1"),
+                    "ops", program.get("ops")));
+            req.put("payload", payload == null ? Map.of() : payload);
+            Map<String, Object> result = mendrScriptGatewayClient.simulate(req);
+            if (result == null) return false;
+            if (Boolean.FALSE.equals(result.get("valid"))) return false;
+            if (result.containsKey("error") || result.containsKey("errors")) {
+                Object errs = result.get("errors");
+                if (errs instanceof List<?> list && !list.isEmpty()) return false;
+            }
+            return result.containsKey("output") || result.containsKey("result")
+                    || Boolean.TRUE.equals(result.get("ok"))
+                    || !result.containsKey("valid"); // some gateways return output only
+        } catch (Exception e) {
+            log.warn("deterministic simulate failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private boolean runDeterministicMetamorphic(Map<String, Object> program, Object payload) {
+        try {
+            Map<String, Object> req = new LinkedHashMap<>();
+            req.put("program", Map.of(
+                    "schemaVersion", program.getOrDefault("schemaVersion", "mendrscript/v1"),
+                    "ops", program.get("ops")));
+            req.put("payload", payload == null ? Map.of() : payload);
+            Map<String, Object> result = mendrScriptGatewayClient.verifyProperties(req);
+            if (result == null) return false;
+            if (Boolean.TRUE.equals(result.get("passed")) || Boolean.TRUE.equals(result.get("valid"))) {
+                return true;
+            }
+            Object rate = result.get("passRate");
+            if (rate instanceof Number n) {
+                return deterministicProposalGate.metamorphicPasses(n.doubleValue());
+            }
+            return false;
+        } catch (Exception e) {
+            log.warn("deterministic metamorphic failed: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    static Map<String, Object> buildShadowComparison(
+            Map<String, Object> detectorProgram, Map<String, Object> llmProgram) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("detectorOps", detectorProgram != null ? detectorProgram.get("ops") : null);
+        out.put("llmType", llmProgram != null ? llmProgram.get("type") : null);
+        out.put("llmOps", llmProgram != null ? llmProgram.get("ops") : null);
+        boolean match = false;
+        if (detectorProgram != null && llmProgram != null) {
+            Object dOps = detectorProgram.get("ops");
+            Object lOps = llmProgram.get("ops");
+            match = dOps != null && dOps.equals(lOps);
+        }
+        out.put("programsMatch", match);
+        // Vacuous "win" when LLM has no ops is NOT a beat — only an explicit match counts
+        // toward detectorBeatsOrTiesLlm for D6 acceptance.
+        out.put("detectorBeatsOrTiesLlm", match);
+        out.put("llmMissing", llmProgram == null || llmProgram.get("ops") == null);
+        return out;
     }
 
     private Map<String, Object> harmonizeWithResponseDiff(

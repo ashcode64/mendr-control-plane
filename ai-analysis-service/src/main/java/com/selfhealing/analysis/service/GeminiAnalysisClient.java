@@ -188,6 +188,12 @@ public class GeminiAnalysisClient implements LlmAnalysisClient {
         try {
             JsonNode tree = objectMapper.readTree(responseBody);
             GeminiResponseSupport.ensureSuccess(tree);
+            JsonNode um = tree.path("usageMetadata");
+            if (um.isObject()) {
+                int in = um.path("promptTokenCount").asInt(0);
+                int out = um.path("candidatesTokenCount").asInt(0);
+                com.selfhealing.analysis.evaluation.InteropBenchUsageLedger.recordHttpCall(in, out);
+            }
             return tree;
         } catch (IllegalStateException e) {
             throw e;

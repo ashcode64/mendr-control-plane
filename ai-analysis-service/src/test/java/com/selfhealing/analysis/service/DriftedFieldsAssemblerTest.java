@@ -20,6 +20,9 @@ class DriftedFieldsAssemblerTest {
                 Map.of("age", "integer"),
                 Map.of("missingA", 0),
                 List.of(),
+                true,
+                List.of(),
+                null,
                 true);
 
         List<Map<String, Object>> fields = DriftedFieldsAssembler.fromSchemaDiff(diff);

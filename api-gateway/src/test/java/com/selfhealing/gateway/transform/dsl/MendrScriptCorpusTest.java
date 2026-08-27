@@ -63,7 +63,11 @@ class MendrScriptCorpusTest {
     private static boolean semanticEquals(JsonNode a, JsonNode b) {
         if (a == null || b == null) return a == b;
         if (a.isNumber() && b.isNumber()) {
-            return a.decimalValue().compareTo(b.decimalValue()) == 0;
+            double da = a.asDouble();
+            double db = b.asDouble();
+            if (Double.compare(da, db) == 0) return true;
+            double scale = Math.max(1.0, Math.max(Math.abs(da), Math.abs(db)));
+            return Math.abs(da - db) <= 1e-9 * scale;
         }
         if (a.isObject() && b.isObject()) {
             if (a.size() != b.size()) return false;

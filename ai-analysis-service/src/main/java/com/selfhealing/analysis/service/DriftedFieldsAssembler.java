@@ -88,6 +88,21 @@ public final class DriftedFieldsAssembler {
             }
         }
 
+        if (d.ops() != null && !d.ops().isEmpty()
+                && (d.kind() == SchemaDiffResult.Kind.UNIT_SCALE
+                || d.kind() == SchemaDiffResult.Kind.DATE_FORMAT)) {
+            String path = null;
+            for (Map<String, Object> op : d.ops()) {
+                if (op == null) continue;
+                if (op.get("path") != null) path = toPointer(str(op.get("path")));
+                else if (op.get("to") != null) path = toPointer(str(op.get("to")));
+            }
+            if (path == null) path = "/";
+            String change = d.kind() == SchemaDiffResult.Kind.UNIT_SCALE ? "UNIT_SCALE" : "DATE_FORMAT";
+            Map<String, Object> minimal = d.ops().get(d.ops().size() - 1);
+            out.add(fieldEntry(path, d.kind().name(), change, null, null, minimal));
+        }
+
         return out;
     }
 

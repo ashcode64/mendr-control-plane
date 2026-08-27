@@ -1,0 +1,799 @@
+{
+  "label" : "mode-b-post-detector",
+  "frozenAt" : "2026-08-22T04:06:15.595505Z",
+  "immutable" : true,
+  "rewriteOnTest" : false,
+  "summary" : {
+    "pass@1" : 0.9375,
+    "pass@3" : 0.9375,
+    "value_pass@1" : 1.0,
+    "mean_latency_ms" : 0.8789843749999998,
+    "total_tokens" : 238978.0,
+    "total_usd" : 0.3399152,
+    "mean_eqsat_delta" : 0.33151041666666675,
+    "shadow_attribution_rate" : 1.0,
+    "n" : 32,
+    "notes" : {
+      "mode" : "B",
+      "detectorsEnabled" : true,
+      "N" : 10,
+      "pass_at_k" : [ 1, 3 ],
+      "llmSource" : "MOCK_LLM",
+      "benchTenant" : {
+        "semaphore" : 2,
+        "tenantPerMinuteApplied" : 120,
+        "globalPerMinuteApplied" : 300,
+        "productionTenantPerMinute" : 10,
+        "productionGlobalPerMinute" : 30
+      },
+      "throughput" : "Mode B throughput: production tenant-per-minute=10, global-per-minute=30, semaphore=2.\nBench tenant applied via InteropBenchBenchTenant / application-interop.yml:\n  tenant-per-minute=120, global-per-minute=300.\nPilot measures real mock-LLM HTTP turns (not a hardcoded 6).\npass@k reported for k in {1,3}; N=10 independent draws per fixture.\n",
+      "independentDraws" : true
+    }
+  },
+  "cases" : [ {
+    "id" : "v_kmh_to_mph_easy_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 2.137,
+    "tokens" : 6406.0,
+    "usdCost" : 0.011140800000000006,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/speed_kmh",
+        "to" : "/speed_mph"
+      }, {
+        "op" : "scale",
+        "path" : "/speed_mph",
+        "numerator" : 0.621371,
+        "denominator" : 1.0,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_mph_to_kmh_medium_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.6916,
+    "tokens" : 7460.0,
+    "usdCost" : 0.011807999999999985,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/speed_mph",
+        "to" : "/speed_kmh"
+      }, {
+        "op" : "scale",
+        "path" : "/speed_kmh",
+        "numerator" : 1.0,
+        "denominator" : 0.621371,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_m_to_ft_easy_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.7767,
+    "tokens" : 5493.0,
+    "usdCost" : 0.00794640000000002,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/dist_m",
+        "to" : "/dist_ft"
+      }, {
+        "op" : "scale",
+        "path" : "/dist_ft",
+        "numerator" : 3.28084,
+        "denominator" : 1.0,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_ft_to_m_medium_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.8637,
+    "tokens" : 7592.0,
+    "usdCost" : 0.011414399999999991,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/dist_ft",
+        "to" : "/dist_m"
+      }, {
+        "op" : "scale",
+        "path" : "/dist_m",
+        "numerator" : 1.0,
+        "denominator" : 3.28084,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_kg_to_lbs_easy_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.7326,
+    "tokens" : 8374.0,
+    "usdCost" : 0.009633599999999964,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/mass_kg",
+        "to" : "/mass_lbs"
+      }, {
+        "op" : "scale",
+        "path" : "/mass_lbs",
+        "numerator" : 2.20462,
+        "denominator" : 1.0,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_lbs_to_kg_hard_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 9,
+    "latencyMs" : 0.8422,
+    "tokens" : 7944.0,
+    "usdCost" : 0.011881600000000048,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/mass_lbs",
+        "to" : "/mass_kg"
+      }, {
+        "op" : "scale",
+        "path" : "/mass_kg",
+        "numerator" : 1.0,
+        "denominator" : 2.20462,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_c_to_f_easy_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.8966,
+    "tokens" : 9337.0,
+    "usdCost" : 0.012077599999999966,
+    "eqsatDelta" : 0.225,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/temp_c",
+        "to" : "/temp_f"
+      }, {
+        "op" : "scale",
+        "path" : "/temp_f",
+        "numerator" : 9.0,
+        "denominator" : 5.0,
+        "expectedMin" : -200.0,
+        "expectedMax" : 500.0
+      }, {
+        "op" : "arith",
+        "path" : "/temp_f",
+        "operator" : "+",
+        "operand" : 32.0,
+        "expectedMin" : -200.0,
+        "expectedMax" : 500.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_f_to_c_medium_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.9444,
+    "tokens" : 8954.0,
+    "usdCost" : 0.012273600000000051,
+    "eqsatDelta" : 0.225,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/temp_f",
+        "to" : "/temp_c"
+      }, {
+        "op" : "arith",
+        "path" : "/temp_c",
+        "operator" : "-",
+        "operand" : 32.0,
+        "expectedMin" : -200.0,
+        "expectedMax" : 500.0
+      }, {
+        "op" : "scale",
+        "path" : "/temp_c",
+        "numerator" : 5.0,
+        "denominator" : 9.0,
+        "expectedMin" : -200.0,
+        "expectedMax" : 500.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_iso_to_epoch_s_easy_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 1.6606,
+    "tokens" : 6704.0,
+    "usdCost" : 0.010511999999999966,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/created_iso8601",
+        "to" : "/created_epoch_s"
+      }, {
+        "op" : "reformat_date",
+        "path" : "/created_epoch_s",
+        "sourceFormat" : "iso8601",
+        "targetFormat" : "epoch_s"
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_epoch_s_to_iso_medium_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 1.4109,
+    "tokens" : 7090.0,
+    "usdCost" : 0.009566399999999975,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/created_epoch_s",
+        "to" : "/created_iso8601"
+      }, {
+        "op" : "reformat_date",
+        "path" : "/created_iso8601",
+        "sourceFormat" : "epoch_s",
+        "targetFormat" : "iso8601"
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_iso_to_epoch_ms_hard_fo",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 9,
+    "latencyMs" : 0.9618,
+    "tokens" : 6062.0,
+    "usdCost" : 0.009099200000000085,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/event_iso8601",
+        "to" : "/event_epoch_ms"
+      }, {
+        "op" : "reformat_date",
+        "path" : "/event_epoch_ms",
+        "sourceFormat" : "iso8601",
+        "targetFormat" : "epoch_ms"
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_kmh_to_mph_easy_bw",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 2.3275,
+    "tokens" : 6407.0,
+    "usdCost" : 0.01126959999999999,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/speed_kmh",
+        "to" : "/speed_mph"
+      }, {
+        "op" : "scale",
+        "path" : "/speed_mph",
+        "numerator" : 0.621371,
+        "denominator" : 1.0,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_c_to_f_medium_bw",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.9752,
+    "tokens" : 8869.0,
+    "usdCost" : 0.010842399999999919,
+    "eqsatDelta" : 0.225,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/temp_c",
+        "to" : "/temp_f"
+      }, {
+        "op" : "scale",
+        "path" : "/temp_f",
+        "numerator" : 9.0,
+        "denominator" : 5.0,
+        "expectedMin" : -200.0,
+        "expectedMax" : 500.0
+      }, {
+        "op" : "arith",
+        "path" : "/temp_f",
+        "operator" : "+",
+        "operand" : 32.0,
+        "expectedMin" : -200.0,
+        "expectedMax" : 500.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_iso_to_epoch_s_hard_bw",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 9,
+    "latencyMs" : 0.868,
+    "tokens" : 8716.0,
+    "usdCost" : 0.01281600000000005,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/created_iso8601",
+        "to" : "/created_epoch_s"
+      }, {
+        "op" : "reformat_date",
+        "path" : "/created_epoch_s",
+        "sourceFormat" : "iso8601",
+        "targetFormat" : "epoch_s"
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_kg_to_lbs_easy_ub",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.9253,
+    "tokens" : 9420.0,
+    "usdCost" : 0.013414400000000049,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/mass_kg",
+        "to" : "/mass_lbs"
+      }, {
+        "op" : "scale",
+        "path" : "/mass_lbs",
+        "numerator" : 2.20462,
+        "denominator" : 1.0,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_m_to_ft_medium_ub",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.8128,
+    "tokens" : 9740.0,
+    "usdCost" : 0.013702399999999892,
+    "eqsatDelta" : 0.3,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/dist_m",
+        "to" : "/dist_ft"
+      }, {
+        "op" : "scale",
+        "path" : "/dist_ft",
+        "numerator" : 3.28084,
+        "denominator" : 1.0,
+        "expectedMin" : -1000000.0,
+        "expectedMax" : 1000000.0
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "v_epoch_ms_to_iso_hard_ub",
+    "clazz" : "value",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 9,
+    "latencyMs" : 0.8704,
+    "tokens" : 6227.0,
+    "usdCost" : 0.010357599999999967,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : {
+      "detectorOps" : [ {
+        "op" : "rename",
+        "from" : "/event_epoch_ms",
+        "to" : "/event_iso8601"
+      }, {
+        "op" : "reformat_date",
+        "path" : "/event_iso8601",
+        "sourceFormat" : "epoch_ms",
+        "targetFormat" : "iso8601"
+      } ],
+      "llmOps" : [ ],
+      "programsMatch" : false,
+      "detectorBeatsOrTiesLlm" : true,
+      "llmMissing" : false,
+      "unflaggedDetectorWrongLlmRight" : false
+    },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_rename_snake_easy_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.3756,
+    "tokens" : 9496.0,
+    "usdCost" : 0.013344000000000134,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_coerce_amount_easy_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.4631,
+    "tokens" : 6596.0,
+    "usdCost" : 0.010598399999999897,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_missing_amount_easy_fo",
+    "clazz" : "structural",
+    "passAt1" : false,
+    "passAt3" : false,
+    "n" : 10,
+    "hitsInN" : 0,
+    "latencyMs" : 0.3615,
+    "tokens" : 7764.0,
+    "usdCost" : 0.010585599999999973,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_rename_payment_medium_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 0.4221,
+    "tokens" : 6214.0,
+    "usdCost" : 0.008001600000000053,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_coerce_int_medium_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.6577,
+    "tokens" : 8027.0,
+    "usdCost" : 0.011340000000000017,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 20,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_missing_currency_medium_fo",
+    "clazz" : "structural",
+    "passAt1" : false,
+    "passAt3" : false,
+    "n" : 10,
+    "hitsInN" : 0,
+    "latencyMs" : 0.4644,
+    "tokens" : 6643.0,
+    "usdCost" : 0.008492000000000055,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_rename_nested_hard_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 0.5156,
+    "tokens" : 8563.0,
+    "usdCost" : 0.011564000000000019,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_dotted_key_pointer_hard_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.3374,
+    "tokens" : 5340.0,
+    "usdCost" : 0.007993599999999934,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_coerce_bool_hard_fo",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.4737,
+    "tokens" : 7897.0,
+    "usdCost" : 0.0115016,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_move_unnest_amount_easy_bw",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 1.306,
+    "tokens" : 6158.0,
+    "usdCost" : 0.007675199999999993,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_move_nest_amount_easy_ub",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 0.4175,
+    "tokens" : 8397.0,
+    "usdCost" : 0.00994000000000006,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_move_unnest_billing_medium_bw",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 2.3935,
+    "tokens" : 6854.0,
+    "usdCost" : 0.009863999999999984,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_move_cross_parent_medium_ub",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 10,
+    "latencyMs" : 0.4853,
+    "tokens" : 6272.0,
+    "usdCost" : 0.008246399999999987,
+    "eqsatDelta" : 0.5,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_move_deep_unnest_hard_bw",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 0.4228,
+    "tokens" : 7930.0,
+    "usdCost" : 0.01048159999999998,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 19,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  }, {
+    "id" : "s_move_deep_nest_hard_ub",
+    "clazz" : "structural",
+    "passAt1" : true,
+    "passAt3" : true,
+    "n" : 10,
+    "hitsInN" : 8,
+    "latencyMs" : 0.334,
+    "tokens" : 6032.0,
+    "usdCost" : 0.010531199999999963,
+    "eqsatDelta" : 0.26666666666666666,
+    "llmHttpCalls" : 21,
+    "shadowComparison" : { },
+    "llmSource" : "MOCK_LLM_N10"
+  } ]
+}

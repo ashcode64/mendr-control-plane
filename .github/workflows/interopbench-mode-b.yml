@@ -1,0 +1,39 @@
+name: InteropBench Mode B nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  mode-b:
+    runs-on: ubuntu-latest
+    env:
+      MENDR_ANALYSIS_LLM_TENANT_PER_MIN: "120"
+      MENDR_ANALYSIS_LLM_GLOBAL_PER_MIN: "300"
+      SPRING_PROFILES_ACTIVE: interop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      - name: Install api-gateway (plain jar for MendrScript VM)
+        working-directory: api-gateway
+        run: mvn -B -DskipTests install
+      - name: Mode B N=10 mock-LLM sweep + pilot (does not gate PR)
+        working-directory: ai-analysis-service
+        run: >
+          mvn -B -Dmendr.interop.mode-b=true
+          -Dtest=InteropBenchModeBAcceptanceTest,InteropBenchModeATest,InteropBenchBaselineAcceptanceTest
+          test
+      - name: Upload InteropBench artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interopbench-baselines
+          path: |
+            ai-analysis-service/target/interop-baseline/**
+            ai-analysis-service/src/test/resources/interop/baselines/**
+          if-no-files-found: warn

@@ -3,6 +3,8 @@ package com.selfhealing.analysis.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.selfhealing.analysis.dto.ApiFailureEvent;
 import com.selfhealing.analysis.service.context.TopologyContext;
+import com.selfhealing.analysis.service.registry.UnitDateDetector;
+import com.selfhealing.analysis.service.safety.DeterministicProposalGate;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -27,6 +29,7 @@ public class FailureContextEnricher {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final DeterministicProposalGate deterministicProposalGate;
 
     public FailureAnalysisContext enrich(ApiFailureEvent event) {
         String category = event.getFailureCategory() != null ? event.getFailureCategory() : "UNKNOWN";
@@ -47,13 +50,18 @@ public class FailureContextEnricher {
         CorsEdgeDiffResult corsEdgeDiff = CorsEdgeDiffResult.empty();
 
         if ("SCHEMA_MISMATCH".equals(category)) {
-            schemaDiff = SchemaMismatchAnalyzer.analyze(
-                    event.getRequestPayload(),
-                    contracts.senderContract(),
-                    contracts.receiverContract(),
-                    contracts.receiverSchema(),
-                    event.getErrorMessage(),
-                    event.getResponsePayload());
+            UnitDateDetector.DetectorConfig cfg = new UnitDateDetector.DetectorConfig(
+                    deterministicProposalGate.isUnitScaleEnabled(),
+                    deterministicProposalGate.isDateFormatEnabled(),
+                    deterministicProposalGate.denylistedRuleIds());
+            schemaDiff = SchemaMismatchAnalyzer.withDetectorConfig(cfg, () ->
+                    SchemaMismatchAnalyzer.analyze(
+                            event.getRequestPayload(),
+                            contracts.senderContract(),
+                            contracts.receiverContract(),
+                            contracts.receiverSchema(),
+                            event.getErrorMessage(),
+                            event.getResponsePayload()));
             if (schemaDiff.hasDeterministicRule()) {
                 log.info("Schema diff for {}: {} — {}", event.getFailureId(), schemaDiff.kind(), schemaDiff.summary());
             }

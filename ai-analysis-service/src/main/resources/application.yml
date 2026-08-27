@@ -56,6 +56,20 @@ mendr:
     # Refuse to activate fits that fail Phase-E ECE/AUROC ablation guard (when evalN ≥ min).
     require-calibration-guard: ${MENDR_CONFORMAL_REQUIRE_CALIBRATION_GUARD:true}
     calibration-guard-min-eval-n: ${MENDR_CONFORMAL_GUARD_MIN_EVAL_N:20}
+  deterministic:
+    # Independent of mendr.conformal.auto-apply-enabled (LLM path only).
+    auto-apply-enabled: ${MENDR_DETERMINISTIC_AUTO_APPLY:false}
+    detectors:
+      unit-scale:
+        enabled: ${MENDR_DETERMINISTIC_UNIT_SCALE_ENABLED:true}
+      date-format:
+        enabled: ${MENDR_DETERMINISTIC_DATE_FORMAT_ENABLED:true}
+    # Comma-separated registry rule ids denylisted at runtime (kill switch).
+    rule-denylist: ${MENDR_DETERMINISTIC_RULE_DENYLIST:}
+  analyze:
+    schema-pair-cache:
+      enabled: ${MENDR_ANALYZE_SCHEMA_PAIR_CACHE:false}
+      ttl-seconds: ${MENDR_ANALYZE_SCHEMA_PAIR_CACHE_TTL:86400}
   confidence:
     # s₇ multi-agent debate — stub only until implementation lands.
     debate-enabled: ${MENDR_CONFIDENCE_DEBATE_ENABLED:false}

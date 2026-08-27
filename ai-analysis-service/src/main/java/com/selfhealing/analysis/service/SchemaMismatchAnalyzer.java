@@ -1,6 +1,7 @@
 package com.selfhealing.analysis.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.selfhealing.analysis.service.registry.UnitDateDetector;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -42,6 +43,30 @@ public final class SchemaMismatchAnalyzer {
         String n = leafName.toLowerCase(Locale.ROOT);
         if (IDENTITY_BLOCKLIST.contains(n)) return true;
         return n.endsWith("_id") || n.endsWith("token") || n.endsWith("password") || n.endsWith("secret");
+    }
+
+    private static final ThreadLocal<UnitDateDetector.DetectorConfig> DETECTOR_CONFIG =
+            ThreadLocal.withInitial(UnitDateDetector.DetectorConfig::defaults);
+
+    /** Override detector kill-switch / enable flags for the current thread (tests + enricher). */
+    public static void withDetectorConfig(UnitDateDetector.DetectorConfig config, Runnable action) {
+        UnitDateDetector.DetectorConfig prev = DETECTOR_CONFIG.get();
+        try {
+            DETECTOR_CONFIG.set(config == null ? UnitDateDetector.DetectorConfig.defaults() : config);
+            action.run();
+        } finally {
+            DETECTOR_CONFIG.set(prev);
+        }
+    }
+
+    public static <T> T withDetectorConfig(UnitDateDetector.DetectorConfig config, java.util.function.Supplier<T> action) {
+        UnitDateDetector.DetectorConfig prev = DETECTOR_CONFIG.get();
+        try {
+            DETECTOR_CONFIG.set(config == null ? UnitDateDetector.DetectorConfig.defaults() : config);
+            return action.get();
+        } finally {
+            DETECTOR_CONFIG.set(prev);
+        }
     }
 
     private SchemaMismatchAnalyzer() {}
@@ -93,6 +118,13 @@ public final class SchemaMismatchAnalyzer {
                         .formatted(moves.size(), moves);
                 return SchemaDiffResult.move(summary, moves);
             }
+        }
+
+        // Closed-registry UNIT_SCALE / DATE_FORMAT (D7) — before payment-schema filter so
+        // non-payment unit/date contracts are still detected.
+        SchemaDiffResult registryHit = UnitDateDetector.detect(actual, receiver, DETECTOR_CONFIG.get());
+        if (registryHit.hasDeterministicRule()) {
+            return registryHit;
         }
 
         // Ignore non-payment receiver contracts (e.g. CORS metadata accidentally stored as REQUEST)
@@ -492,6 +524,14 @@ public final class SchemaMismatchAnalyzer {
         if (actual instanceof Number && expected instanceof String) return true;
         if (actual instanceof Boolean && !(expected instanceof Boolean)) return true;
         if (expected instanceof Boolean && !(actual instanceof Boolean)) return true;
+        if (actual instanceof Number && expected instanceof Number) {
+            boolean expectedIntegral = expected instanceof Integer || expected instanceof Long
+                    || expected instanceof Short || expected instanceof Byte;
+            boolean actualIntegral = actual instanceof Integer || actual instanceof Long
+                    || actual instanceof Short || actual instanceof Byte;
+            // Receiver wants an integral type but actual is floating → TYPE_COERCE.
+            return expectedIntegral && !actualIntegral;
+        }
         return actual.getClass() != expected.getClass()
                 && (actual instanceof Number) != (expected instanceof Number);
     }

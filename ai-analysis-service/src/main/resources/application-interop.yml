@@ -1,0 +1,7 @@
+mendr:
+  analysis:
+    llm:
+      # InteropBench bench tenant — applied when profile `interop` is active.
+      semaphore: 2
+      tenant-per-minute: 120
+      global-per-minute: 300

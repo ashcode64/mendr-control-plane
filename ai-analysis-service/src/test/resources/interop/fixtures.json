@@ -1,0 +1,1449 @@
+[
+  {
+    "id": "v_kmh_to_mph_easy_fo",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "speed_kmh": 100
+    },
+    "target_schema": {
+      "speed_mph": 62.1371
+    },
+    "input": {
+      "speed_kmh": 100
+    },
+    "golden_output": {
+      "speed_mph": 62.1371
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/speed_kmh",
+          "to": "/speed_mph"
+        },
+        {
+          "op": "scale",
+          "path": "/speed_mph",
+          "numerator": 0.621371,
+          "denominator": 1,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_mph_to_kmh_medium_fo",
+    "class": "value",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "speed_mph": 62.1371
+    },
+    "target_schema": {
+      "speed_kmh": 100
+    },
+    "input": {
+      "speed_mph": 62.1371
+    },
+    "golden_output": {
+      "speed_kmh": 100
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/speed_mph",
+          "to": "/speed_kmh"
+        },
+        {
+          "op": "scale",
+          "path": "/speed_kmh",
+          "numerator": 1,
+          "denominator": 0.621371,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_m_to_ft_easy_fo",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "dist_m": 10
+    },
+    "target_schema": {
+      "dist_ft": 32.8084
+    },
+    "input": {
+      "dist_m": 10
+    },
+    "golden_output": {
+      "dist_ft": 32.8084
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/dist_m",
+          "to": "/dist_ft"
+        },
+        {
+          "op": "scale",
+          "path": "/dist_ft",
+          "numerator": 3.28084,
+          "denominator": 1,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_ft_to_m_medium_fo",
+    "class": "value",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "dist_ft": 32.8084
+    },
+    "target_schema": {
+      "dist_m": 10
+    },
+    "input": {
+      "dist_ft": 32.8084
+    },
+    "golden_output": {
+      "dist_m": 10
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/dist_ft",
+          "to": "/dist_m"
+        },
+        {
+          "op": "scale",
+          "path": "/dist_m",
+          "numerator": 1,
+          "denominator": 3.28084,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_kg_to_lbs_easy_fo",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "mass_kg": 10
+    },
+    "target_schema": {
+      "mass_lbs": 22.0462
+    },
+    "input": {
+      "mass_kg": 10
+    },
+    "golden_output": {
+      "mass_lbs": 22.0462
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/mass_kg",
+          "to": "/mass_lbs"
+        },
+        {
+          "op": "scale",
+          "path": "/mass_lbs",
+          "numerator": 2.20462,
+          "denominator": 1,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_lbs_to_kg_hard_fo",
+    "class": "value",
+    "llm_difficulty": "hard",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "mass_lbs": 22.0462
+    },
+    "target_schema": {
+      "mass_kg": 10
+    },
+    "input": {
+      "mass_lbs": 22.0462
+    },
+    "golden_output": {
+      "mass_kg": 10
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/mass_lbs",
+          "to": "/mass_kg"
+        },
+        {
+          "op": "scale",
+          "path": "/mass_kg",
+          "numerator": 1,
+          "denominator": 2.20462,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_c_to_f_easy_fo",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "temp_c": 0
+    },
+    "target_schema": {
+      "temp_f": 32
+    },
+    "input": {
+      "temp_c": 0
+    },
+    "golden_output": {
+      "temp_f": 32
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/temp_c",
+          "to": "/temp_f"
+        },
+        {
+          "op": "scale",
+          "path": "/temp_f",
+          "numerator": 9,
+          "denominator": 5,
+          "expectedMin": -200,
+          "expectedMax": 500
+        },
+        {
+          "op": "arith",
+          "path": "/temp_f",
+          "operator": "+",
+          "operand": 32,
+          "expectedMin": -200,
+          "expectedMax": 500
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_f_to_c_medium_fo",
+    "class": "value",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "temp_f": 32
+    },
+    "target_schema": {
+      "temp_c": 0
+    },
+    "input": {
+      "temp_f": 32
+    },
+    "golden_output": {
+      "temp_c": 0
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/temp_f",
+          "to": "/temp_c"
+        },
+        {
+          "op": "arith",
+          "path": "/temp_c",
+          "operator": "-",
+          "operand": 32,
+          "expectedMin": -200,
+          "expectedMax": 500
+        },
+        {
+          "op": "scale",
+          "path": "/temp_c",
+          "numerator": 5,
+          "denominator": 9,
+          "expectedMin": -200,
+          "expectedMax": 500
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_iso_to_epoch_s_easy_fo",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "created_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "target_schema": {
+      "created_epoch_s": 1577836800
+    },
+    "input": {
+      "created_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "golden_output": {
+      "created_epoch_s": 1577836800
+    },
+    "expected_mismatches": [
+      "DATE_FORMAT"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/created_iso8601",
+          "to": "/created_epoch_s"
+        },
+        {
+          "op": "reformat_date",
+          "path": "/created_epoch_s",
+          "sourceFormat": "iso8601",
+          "targetFormat": "epoch_s"
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_epoch_s_to_iso_medium_fo",
+    "class": "value",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "created_epoch_s": 1577836800
+    },
+    "target_schema": {
+      "created_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "input": {
+      "created_epoch_s": 1577836800
+    },
+    "golden_output": {
+      "created_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "expected_mismatches": [
+      "DATE_FORMAT"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/created_epoch_s",
+          "to": "/created_iso8601"
+        },
+        {
+          "op": "reformat_date",
+          "path": "/created_iso8601",
+          "sourceFormat": "epoch_s",
+          "targetFormat": "iso8601"
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_iso_to_epoch_ms_hard_fo",
+    "class": "value",
+    "llm_difficulty": "hard",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "event_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "target_schema": {
+      "event_epoch_ms": 1577836800000
+    },
+    "input": {
+      "event_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "golden_output": {
+      "event_epoch_ms": 1577836800000
+    },
+    "expected_mismatches": [
+      "DATE_FORMAT"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/event_iso8601",
+          "to": "/event_epoch_ms"
+        },
+        {
+          "op": "reformat_date",
+          "path": "/event_epoch_ms",
+          "sourceFormat": "iso8601",
+          "targetFormat": "epoch_ms"
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_kmh_to_mph_easy_bw",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "BOUNDED_WINDOW",
+    "source_schema": {
+      "speed_kmh": 50
+    },
+    "target_schema": {
+      "speed_mph": 31.06855
+    },
+    "input": {
+      "speed_kmh": 50
+    },
+    "golden_output": {
+      "speed_mph": 31.06855
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/speed_kmh",
+          "to": "/speed_mph"
+        },
+        {
+          "op": "scale",
+          "path": "/speed_mph",
+          "numerator": 0.621371,
+          "denominator": 1,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_c_to_f_medium_bw",
+    "class": "value",
+    "llm_difficulty": "medium",
+    "plan_class": "BOUNDED_WINDOW",
+    "source_schema": {
+      "temp_c": 100
+    },
+    "target_schema": {
+      "temp_f": 212
+    },
+    "input": {
+      "temp_c": 100
+    },
+    "golden_output": {
+      "temp_f": 212
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/temp_c",
+          "to": "/temp_f"
+        },
+        {
+          "op": "scale",
+          "path": "/temp_f",
+          "numerator": 9,
+          "denominator": 5,
+          "expectedMin": -200,
+          "expectedMax": 500
+        },
+        {
+          "op": "arith",
+          "path": "/temp_f",
+          "operator": "+",
+          "operand": 32,
+          "expectedMin": -200,
+          "expectedMax": 500
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_iso_to_epoch_s_hard_bw",
+    "class": "value",
+    "llm_difficulty": "hard",
+    "plan_class": "BOUNDED_WINDOW",
+    "source_schema": {
+      "created_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "target_schema": {
+      "created_epoch_s": 1577836800
+    },
+    "input": {
+      "created_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "golden_output": {
+      "created_epoch_s": 1577836800
+    },
+    "expected_mismatches": [
+      "DATE_FORMAT"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/created_iso8601",
+          "to": "/created_epoch_s"
+        },
+        {
+          "op": "reformat_date",
+          "path": "/created_epoch_s",
+          "sourceFormat": "iso8601",
+          "targetFormat": "epoch_s"
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_kg_to_lbs_easy_ub",
+    "class": "value",
+    "llm_difficulty": "easy",
+    "plan_class": "UNBOUNDED",
+    "source_schema": {
+      "mass_kg": 5
+    },
+    "target_schema": {
+      "mass_lbs": 11.0231
+    },
+    "input": {
+      "mass_kg": 5
+    },
+    "golden_output": {
+      "mass_lbs": 11.0231
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/mass_kg",
+          "to": "/mass_lbs"
+        },
+        {
+          "op": "scale",
+          "path": "/mass_lbs",
+          "numerator": 2.20462,
+          "denominator": 1,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_m_to_ft_medium_ub",
+    "class": "value",
+    "llm_difficulty": "medium",
+    "plan_class": "UNBOUNDED",
+    "source_schema": {
+      "dist_m": 2
+    },
+    "target_schema": {
+      "dist_ft": 6.56168
+    },
+    "input": {
+      "dist_m": 2
+    },
+    "golden_output": {
+      "dist_ft": 6.56168
+    },
+    "expected_mismatches": [
+      "UNIT_SCALE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/dist_m",
+          "to": "/dist_ft"
+        },
+        {
+          "op": "scale",
+          "path": "/dist_ft",
+          "numerator": 3.28084,
+          "denominator": 1,
+          "expectedMin": -1000000.0,
+          "expectedMax": 1000000.0
+        }
+      ]
+    }
+  },
+  {
+    "id": "v_epoch_ms_to_iso_hard_ub",
+    "class": "value",
+    "llm_difficulty": "hard",
+    "plan_class": "UNBOUNDED",
+    "source_schema": {
+      "event_epoch_ms": 1577836800000
+    },
+    "target_schema": {
+      "event_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "input": {
+      "event_epoch_ms": 1577836800000
+    },
+    "golden_output": {
+      "event_iso8601": "2020-01-01T00:00:00Z"
+    },
+    "expected_mismatches": [
+      "DATE_FORMAT"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/event_epoch_ms",
+          "to": "/event_iso8601"
+        },
+        {
+          "op": "reformat_date",
+          "path": "/event_iso8601",
+          "sourceFormat": "epoch_ms",
+          "targetFormat": "iso8601"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_rename_snake_easy_fo",
+    "class": "structural",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customer_id": "C1",
+      "amount": 10
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 10
+    },
+    "input": {
+      "customer_id": "C9",
+      "amount": 15
+    },
+    "golden_output": {
+      "customerId": "C9",
+      "amount": 15
+    },
+    "expected_mismatches": [
+      "FIELD_RENAME"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/customer_id",
+          "to": "/customerId"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_coerce_amount_easy_fo",
+    "class": "structural",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customerId": "C1",
+      "amount": "10"
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 10
+    },
+    "input": {
+      "customerId": "C1",
+      "amount": "25"
+    },
+    "golden_output": {
+      "customerId": "C1",
+      "amount": 25
+    },
+    "expected_mismatches": [
+      "TYPE_MISMATCH"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "coerce",
+          "path": "/amount",
+          "targetType": "number"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_missing_amount_easy_fo",
+    "class": "structural",
+    "llm_difficulty": "easy",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customerId": "C1"
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 0
+    },
+    "input": {
+      "customerId": "C1"
+    },
+    "golden_output": {
+      "customerId": "C1",
+      "amount": 0
+    },
+    "expected_mismatches": [
+      "MISSING_FIELD"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "default",
+          "path": "/amount",
+          "value": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_rename_payment_medium_fo",
+    "class": "structural",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "cust_id": "C1",
+      "amt": 10
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 10
+    },
+    "input": {
+      "cust_id": "C2",
+      "amt": 20
+    },
+    "golden_output": {
+      "customerId": "C2",
+      "amount": 20
+    },
+    "expected_mismatches": [
+      "FIELD_RENAME"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/cust_id",
+          "to": "/customerId"
+        },
+        {
+          "op": "rename",
+          "from": "/amt",
+          "to": "/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_coerce_int_medium_fo",
+    "class": "structural",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customerId": "C1",
+      "amount": 10.0
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 10
+    },
+    "input": {
+      "customerId": "C1",
+      "amount": 7.0
+    },
+    "golden_output": {
+      "customerId": "C1",
+      "amount": 7
+    },
+    "expected_mismatches": [
+      "TYPE_MISMATCH"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "coerce",
+          "path": "/amount",
+          "targetType": "integer"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_missing_currency_medium_fo",
+    "class": "structural",
+    "llm_difficulty": "medium",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customerId": "C1",
+      "amount": 1
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 1,
+      "currency": "USD"
+    },
+    "input": {
+      "customerId": "C1",
+      "amount": 1
+    },
+    "golden_output": {
+      "customerId": "C1",
+      "amount": 1,
+      "currency": "USD"
+    },
+    "expected_mismatches": [
+      "MISSING_FIELD"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "default",
+          "path": "/currency",
+          "value": "USD"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_rename_nested_hard_fo",
+    "class": "structural",
+    "llm_difficulty": "hard",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customer_id": "C1",
+      "total_amount": 9
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 9
+    },
+    "input": {
+      "customer_id": "C3",
+      "total_amount": 11
+    },
+    "golden_output": {
+      "customerId": "C3",
+      "amount": 11
+    },
+    "expected_mismatches": [
+      "FIELD_RENAME"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/customer_id",
+          "to": "/customerId"
+        },
+        {
+          "op": "rename",
+          "from": "/total_amount",
+          "to": "/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_dotted_key_pointer_hard_fo",
+    "class": "structural",
+    "llm_difficulty": "hard",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customerId": "C1",
+      "meta.amount": 5
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 5
+    },
+    "input": {
+      "customerId": "C1",
+      "meta.amount": 8
+    },
+    "golden_output": {
+      "customerId": "C1",
+      "amount": 8
+    },
+    "expected_mismatches": [
+      "FIELD_RENAME"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "rename",
+          "from": "/meta.amount",
+          "to": "/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_coerce_bool_hard_fo",
+    "class": "structural",
+    "llm_difficulty": "hard",
+    "plan_class": "FORWARD_ONLY",
+    "source_schema": {
+      "customerId": "C1",
+      "amount": 1,
+      "active": "true"
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 1,
+      "active": true
+    },
+    "input": {
+      "customerId": "C1",
+      "amount": 1,
+      "active": "true"
+    },
+    "golden_output": {
+      "customerId": "C1",
+      "amount": 1,
+      "active": true
+    },
+    "expected_mismatches": [
+      "TYPE_MISMATCH"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "coerce",
+          "path": "/active",
+          "targetType": "boolean"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_move_unnest_amount_easy_bw",
+    "class": "structural",
+    "llm_difficulty": "easy",
+    "plan_class": "BOUNDED_WINDOW",
+    "source_schema": {
+      "payment": {
+        "customerId": "C1",
+        "amount": 10.0
+      }
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 10.0
+    },
+    "input": {
+      "payment": {
+        "customerId": "C7",
+        "amount": 25.0
+      }
+    },
+    "golden_output": {
+      "payment": {},
+      "customerId": "C7",
+      "amount": 25.0
+    },
+    "expected_mismatches": [
+      "FIELD_MOVE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "move",
+          "from": "/payment/customerId",
+          "to": "/customerId"
+        },
+        {
+          "op": "move",
+          "from": "/payment/amount",
+          "to": "/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_move_nest_amount_easy_ub",
+    "class": "structural",
+    "llm_difficulty": "easy",
+    "plan_class": "UNBOUNDED",
+    "source_schema": {
+      "customerId": "C1",
+      "amount": 5.0
+    },
+    "target_schema": {
+      "envelope": {
+        "customerId": "C1",
+        "amount": 5.0
+      }
+    },
+    "input": {
+      "customerId": "C4",
+      "amount": 12.0
+    },
+    "golden_output": {
+      "envelope": {
+        "customerId": "C4",
+        "amount": 12.0
+      }
+    },
+    "expected_mismatches": [
+      "FIELD_MOVE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "move",
+          "from": "/customerId",
+          "to": "/envelope/customerId"
+        },
+        {
+          "op": "move",
+          "from": "/amount",
+          "to": "/envelope/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_move_unnest_billing_medium_bw",
+    "class": "structural",
+    "llm_difficulty": "medium",
+    "plan_class": "BOUNDED_WINDOW",
+    "source_schema": {
+      "billing": {
+        "amount": 40.0,
+        "customerId": "C1"
+      }
+    },
+    "target_schema": {
+      "amount": 40.0,
+      "customerId": "C1"
+    },
+    "input": {
+      "billing": {
+        "amount": 40.0,
+        "customerId": "C11"
+      }
+    },
+    "golden_output": {
+      "billing": {},
+      "amount": 40.0,
+      "customerId": "C11"
+    },
+    "expected_mismatches": [
+      "FIELD_MOVE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "move",
+          "from": "/billing/amount",
+          "to": "/amount"
+        },
+        {
+          "op": "move",
+          "from": "/billing/customerId",
+          "to": "/customerId"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_move_cross_parent_medium_ub",
+    "class": "structural",
+    "llm_difficulty": "medium",
+    "plan_class": "UNBOUNDED",
+    "source_schema": {
+      "meta": {
+        "customerId": "C1"
+      },
+      "amount": 20.0
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 20.0
+    },
+    "input": {
+      "meta": {
+        "customerId": "C55"
+      },
+      "amount": 88.0
+    },
+    "golden_output": {
+      "meta": {},
+      "customerId": "C55",
+      "amount": 88.0
+    },
+    "expected_mismatches": [
+      "FIELD_MOVE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "move",
+          "from": "/meta/customerId",
+          "to": "/customerId"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_move_deep_unnest_hard_bw",
+    "class": "structural",
+    "llm_difficulty": "hard",
+    "plan_class": "BOUNDED_WINDOW",
+    "source_schema": {
+      "envelope": {
+        "payload": {
+          "customerId": "C1",
+          "amount": 1.0
+        }
+      }
+    },
+    "target_schema": {
+      "customerId": "C1",
+      "amount": 1.0
+    },
+    "input": {
+      "envelope": {
+        "payload": {
+          "customerId": "C90",
+          "amount": 33.0
+        }
+      }
+    },
+    "golden_output": {
+      "envelope": {
+        "payload": {}
+      },
+      "customerId": "C90",
+      "amount": 33.0
+    },
+    "expected_mismatches": [
+      "FIELD_MOVE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "move",
+          "from": "/envelope/payload/customerId",
+          "to": "/customerId"
+        },
+        {
+          "op": "move",
+          "from": "/envelope/payload/amount",
+          "to": "/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "s_move_deep_nest_hard_ub",
+    "class": "structural",
+    "llm_difficulty": "hard",
+    "plan_class": "UNBOUNDED",
+    "source_schema": {
+      "customerId": "C1",
+      "amount": 2.0
+    },
+    "target_schema": {
+      "wrap": {
+        "inner": {
+          "customerId": "C1",
+          "amount": 2.0
+        }
+      }
+    },
+    "input": {
+      "customerId": "C8",
+      "amount": 9.0
+    },
+    "golden_output": {
+      "wrap": {
+        "inner": {
+          "customerId": "C8",
+          "amount": 9.0
+        }
+      }
+    },
+    "expected_mismatches": [
+      "FIELD_MOVE"
+    ],
+    "expected_program": {
+      "schemaVersion": "mendrscript/v1",
+      "ops": [
+        {
+          "op": "move",
+          "from": "/customerId",
+          "to": "/wrap/inner/customerId"
+        },
+        {
+          "op": "move",
+          "from": "/amount",
+          "to": "/wrap/inner/amount"
+        }
+      ]
+    }
+  },
+  {
+    "id": "n_parking_meters",
+    "class": "negative",
+    "llm_difficulty": "easy",
+    "plan_class": null,
+    "source_schema": {
+      "parking_meters": 12
+    },
+    "target_schema": {
+      "parking_meters": 12
+    },
+    "input": {
+      "parking_meters": 12
+    },
+    "golden_output": {
+      "parking_meters": 12
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_address_feet",
+    "class": "negative",
+    "llm_difficulty": "easy",
+    "plan_class": null,
+    "source_schema": {
+      "address_feet": 3
+    },
+    "target_schema": {
+      "address_feet": 3
+    },
+    "input": {
+      "address_feet": 3
+    },
+    "golden_output": {
+      "address_feet": 3
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_unit_one_side",
+    "class": "negative",
+    "llm_difficulty": "medium",
+    "plan_class": null,
+    "source_schema": {
+      "speed_kmh": 10
+    },
+    "target_schema": {
+      "speed": 10
+    },
+    "input": {
+      "speed_kmh": 10
+    },
+    "golden_output": {
+      "speed_kmh": 10
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_unit_string_type",
+    "class": "negative",
+    "llm_difficulty": "medium",
+    "plan_class": null,
+    "source_schema": {
+      "speed_kmh": "fast"
+    },
+    "target_schema": {
+      "speed_mph": "fast"
+    },
+    "input": {
+      "speed_kmh": "fast"
+    },
+    "golden_output": {
+      "speed_kmh": "fast"
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_same_unit_diff_name",
+    "class": "negative",
+    "llm_difficulty": "hard",
+    "plan_class": null,
+    "source_schema": {
+      "speed_kmh": 10
+    },
+    "target_schema": {
+      "velocity_kmh": 10
+    },
+    "input": {
+      "speed_kmh": 10
+    },
+    "golden_output": {
+      "speed_kmh": 10
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_date_already_target",
+    "class": "negative",
+    "llm_difficulty": "easy",
+    "plan_class": null,
+    "source_schema": {
+      "created_epoch_s": 1
+    },
+    "target_schema": {
+      "created_epoch_s": 1
+    },
+    "input": {
+      "created_epoch_s": 1
+    },
+    "golden_output": {
+      "created_epoch_s": 1
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_neighbor_feet_no_pair",
+    "class": "negative",
+    "llm_difficulty": "hard",
+    "plan_class": null,
+    "source_schema": {
+      "height_m": 2
+    },
+    "target_schema": {
+      "width_ft": 3
+    },
+    "input": {
+      "height_m": 2
+    },
+    "golden_output": {
+      "height_m": 2
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  },
+  {
+    "id": "n_temp_c_to_celsius_same",
+    "class": "negative",
+    "llm_difficulty": "medium",
+    "plan_class": null,
+    "source_schema": {
+      "temp_c": 20
+    },
+    "target_schema": {
+      "temp_celsius": 20
+    },
+    "input": {
+      "temp_c": 20
+    },
+    "golden_output": {
+      "temp_c": 20
+    },
+    "expected_mismatches": [],
+    "expected_program": null,
+    "assert_no_p0_detector": true
+  }
+]

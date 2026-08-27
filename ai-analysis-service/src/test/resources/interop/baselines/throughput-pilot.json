@@ -1,0 +1,39 @@
+{
+  "label" : "throughput-pilot",
+  "frozenAt" : "2026-08-22T04:06:15.518959600Z",
+  "pilotFixtures" : [ {
+    "id" : "v_kmh_to_mph_easy_fo",
+    "wallMs" : 48.2393,
+    "measuredLlmHttpCalls" : 3
+  }, {
+    "id" : "v_mph_to_kmh_medium_fo",
+    "wallMs" : 0.3459,
+    "measuredLlmHttpCalls" : 3
+  } ],
+  "diagnoseInvocations" : 2,
+  "measuredLlmHttpCallsPerDiagnose" : 3.0,
+  "estimatedLlmHttpCallsPerDiagnose" : 3.0,
+  "pilotWallMs" : 48.6154,
+  "admissionDefaults" : {
+    "semaphore" : 2,
+    "tenantPerMinute" : 10,
+    "globalPerMinute" : 30
+  },
+  "benchTenantApplied" : {
+    "semaphore" : 2,
+    "tenantPerMinuteApplied" : 120,
+    "globalPerMinuteApplied" : 300,
+    "productionTenantPerMinute" : 10,
+    "productionGlobalPerMinute" : 30
+  },
+  "fullSweepSizing" : {
+    "estimatedWallMinutesAtBenchTenant" : 5.333333333333333,
+    "N" : 10,
+    "estimatedLlmHttpCalls" : 1920.0,
+    "recommendation" : "Use application-interop.yml (tenant=120) before Mode B N=10",
+    "estimatedDiagnoses" : 640.0,
+    "crossedFixtures" : 32,
+    "sweeps" : 2,
+    "estimatedWallMinutesAtTenantLimit10" : 64.0
+  }
+}

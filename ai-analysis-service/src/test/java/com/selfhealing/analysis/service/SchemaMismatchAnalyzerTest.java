@@ -239,7 +239,10 @@ class SchemaMismatchAnalyzerTest {
                 Map.of(),
                 Map.of(),
                 java.util.List.of(),
-                true);
+                true,
+                java.util.List.of(),
+                null,
+                false);
         assertFalse(diff.hasDeterministicRule());
         assertTrue(diff.toTransformationRules().containsKey("defaults"));
     }

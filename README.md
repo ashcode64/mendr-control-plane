@@ -256,3 +256,56 @@ explicit privacy attestation on opt-in.
 
 That loop — **observe at the edge, decide in the control plane, enforce from a
 local snapshot** — is the current design of Mendr.
+
+---
+
+## InteropBench (SAGAI-MID evaluation methodology)
+
+Mendr’s live accuracy harness lives under
+`ai-analysis-service` (`evaluation/InteropBench*`, fixtures in
+`src/test/resources/interop/`). It adapts SAGAI-MID’s golden-fixture approach
+while keeping Mendr’s execution model (closed-opcode MendrScript only — never
+`exec()` of Python).
+
+**Axes (never collapsed into one `difficulty` tag):**
+
+| Field | Meaning |
+|-------|---------|
+| `llm_difficulty` | How hard generation/diagnosis is |
+| `plan_class` | Edge execution class (`FORWARD_ONLY` / `BOUNDED_WINDOW` / `UNBOUNDED`) |
+| `class` | `structural` / `value` / `negative` |
+
+**Modes:** Mode A (deterministic analyzer → **Java `MendrScriptExecutor` + verifier**,
+CI — never `expected_program` as oracle) · Mode B (nightly workflow
+`.github/workflows/interopbench-mode-b.yml`; offline baseline uses fixture
+`expected_program` as LLM stand-in labeled `FIXTURE_ORACLE`; live LLM via
+`-Dmendr.interop.mode-b=true`). Mode B must not gate CI.
+
+**Acceptance:** Mode A value pass@1 ≥ 0.95 · negative FP = 0 · structural within
+±2pp of frozen pre/post · Mode B `pass@k∈{1,3}`, latency, tokens/USD, EqSat Δ,
+shadow attribution ≥ 0.90 on registry hits · throughput pilot artifact sizes the
+N=10 sweep (default admission → ~64 min; raise bench-tenant limits).
+
+**Gate (D1):** `DeterministicProposalGate` requires D7 fire + gateway
+verify + simulate + metamorphic. Kill-switch drill (per-rule denylist + per-kind
+disable) is a CI test. Shadow mode still pairs detector vs LLM/oracle.
+
+**Structural vs value:** SAGAI re-analysis shows ~0.99 pass@1 on structural
+transforms and ~0.53 on value transforms (unit/date/vocab). Mendr closes the
+**unit + date** slice with closed-registry detectors (`UNIT_SCALE`,
+`DATE_FORMAT`) under a **`DeterministicProposalGate`** — not the LLM conformal
+quantile (exchangeability). Detection uses a D7 conjunction (affix/segment tokens on
+both sides + exact registry pair + stem compatibility); it does **not** use
+substring-anywhere matching. Vocabulary/`map_value` stays LLM-gated until a curated
+convention table ships.
+
+**JSON Pointer vs dot-notation:** fixture `s_dotted_key_pointer_*` uses a
+literal key like `system.cpu.utilization`. MendrScript JSON Pointer treats `.`
+as an ordinary character; SAGAI’s `_set_nested_value` treats dots as nesting and
+cannot set that key.
+
+**Config:** `mendr.deterministic.*` (`MENDR_DETERMINISTIC_AUTO_APPLY`, per-detector
+enable, rule denylist). Independent of `mendr.conformal.auto-apply-enabled`.
+
+**UNBOUNDED caveat:** for cross-parent S3 programs Mendr still full-buffers
+(same memory regime as SAGAI’s DOM path); flat/path-stack work streams via HBM.
