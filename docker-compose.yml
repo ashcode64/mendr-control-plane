@@ -13,16 +13,17 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/init.sql:/docker-entrypoint-initdb.d/init.sql
-      # Runs after init.sql ("init_v2_*" sorts after "init.sql"): multi-tenancy + RLS + app_user
-      - ./infra/init_v2_multitenancy.sql:/docker-entrypoint-initdb.d/init_v2_multitenancy.sql
-      - ./infra/init_v3_analysis_conversations.sql:/docker-entrypoint-initdb.d/init_v3_analysis_conversations.sql
-      - ./infra/init_error_signature.sql:/docker-entrypoint-initdb.d/init_v4_error_signature.sql
-      - ./infra/init_v4_openapi.sql:/docker-entrypoint-initdb.d/init_v4b_openapi.sql
-      - ./infra/init_v5_error_precedents.sql:/docker-entrypoint-initdb.d/init_v5_error_precedents.sql
-      - ./infra/init_v6_phase8_moat.sql:/docker-entrypoint-initdb.d/init_v6_phase8_moat.sql
-      - ./infra/init_v7_self_learning.sql:/docker-entrypoint-initdb.d/init_v7_self_learning.sql
-      - ./infra/init_v8_phase1_regression_ace.sql:/docker-entrypoint-initdb.d/init_v8_phase1_regression_ace.sql
-      - ./infra/init_v9_phase2_repair_heuristics.sql:/docker-entrypoint-initdb.d/init_v9_phase2_repair_heuristics.sql
+      # Container-side names use zero-padded v02–v09 so lexical order matches numeric order
+      # (init_v10 would otherwise run before init_v5 in docker-entrypoint-initdb.d).
+      - ./infra/init_v2_multitenancy.sql:/docker-entrypoint-initdb.d/init_v02_multitenancy.sql
+      - ./infra/init_v3_analysis_conversations.sql:/docker-entrypoint-initdb.d/init_v03_analysis_conversations.sql
+      - ./infra/init_error_signature.sql:/docker-entrypoint-initdb.d/init_v04_error_signature.sql
+      - ./infra/init_v4_openapi.sql:/docker-entrypoint-initdb.d/init_v04b_openapi.sql
+      - ./infra/init_v5_error_precedents.sql:/docker-entrypoint-initdb.d/init_v05_error_precedents.sql
+      - ./infra/init_v6_phase8_moat.sql:/docker-entrypoint-initdb.d/init_v06_phase8_moat.sql
+      - ./infra/init_v7_self_learning.sql:/docker-entrypoint-initdb.d/init_v07_self_learning.sql
+      - ./infra/init_v8_phase1_regression_ace.sql:/docker-entrypoint-initdb.d/init_v08_phase1_regression_ace.sql
+      - ./infra/init_v9_phase2_repair_heuristics.sql:/docker-entrypoint-initdb.d/init_v09_phase2_repair_heuristics.sql
       - ./infra/init_v10_phase3_lilo_metamemory.sql:/docker-entrypoint-initdb.d/init_v10_phase3_lilo_metamemory.sql
       - ./infra/init_v11_phase5_evolvemem.sql:/docker-entrypoint-initdb.d/init_v11_phase5_evolvemem.sql
       - ./infra/init_v12_phase6_gepa.sql:/docker-entrypoint-initdb.d/init_v12_phase6_gepa.sql

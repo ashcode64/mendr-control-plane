@@ -2,7 +2,7 @@
 -- Mendr Control Plane - Multi-tenancy, Per-Tenant Isolation & Auth
 -- ----------------------------------------------------------------------------
 -- Idempotent migration. Runs AFTER init.sql (docker-entrypoint-initdb.d orders
--- by filename; "init_v2_*" sorts after "init.sql"). Safe to re-run by hand
+-- by filename; compose mounts this as init_v02_* so v02 sorts before v10).
 -- against an existing database.
 --
 -- Isolation model: single database, shared schema, tenant_id on every

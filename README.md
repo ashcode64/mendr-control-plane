@@ -201,8 +201,11 @@ See `mendr-minimize/README.md`.
 
 ## Postgres migrations (existing volumes)
 
-Compose mounts init scripts in order on **new** volumes only. For existing
-volumes, apply manually (idempotent), for example:
+Compose mounts init scripts in numeric order on **new** volumes only (container-side
+names use zero-padded `init_v02`–`init_v09` so lexical sort matches v2→v17). If a
+first boot failed partway through init, reset with `docker compose down -v` before
+retrying. For existing volumes that already initialized successfully, apply manually
+(idempotent), for example:
 
 ```powershell
 docker compose exec -T postgres psql -U admin -d selfhealing < infra/init_v3_analysis_conversations.sql
