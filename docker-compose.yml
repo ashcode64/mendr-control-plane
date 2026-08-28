@@ -206,6 +206,11 @@ services:
       MENDR_RCA_MAX_PATHS: ${MENDR_RCA_MAX_PATHS:-20}
       MENDR_RCA_FACTUALITY_ALPHA: ${MENDR_RCA_FACTUALITY_ALPHA:-0.05}
       MENDR_RCA_MIN_CONFIDENCE: ${MENDR_RCA_MIN_CONFIDENCE:-0.4}
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8085/health')\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
     depends_on:
       ai-analysis-service:
         condition: service_started

@@ -1,9 +1,12 @@
 """LangGraph synthesis loop: load_context -> propose -> verify -> (simulate | refine)
--> metamorphic -> minimize -> present.
+-> run_property_checks -> minimize -> present.
 
 The graph is the orchestration spine. It has NO deploy node by construction — the
 terminal `present` node hands the verified (and minimized) program + simulation back
 to the operator, who approves through the existing control-plane flow.
+
+LangGraph rule (>=0.2): node names must not match GraphState keys. Nodes = verbs;
+state keys = nouns (e.g. verify -> verification, run_property_checks -> metamorphic).
 """
 from __future__ import annotations
 
@@ -107,7 +110,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
             state["candidate"], state.get("cases") or [])
         return {"simulation": report}
 
-    async def metamorphic(state: GraphState) -> dict:
+    async def run_property_checks(state: GraphState) -> dict:
         """Phase 8.2 — offline property checks after verify/simulate; feeds SafetyScore."""
         inputs = []
         for c in state.get("cases") or []:
@@ -196,7 +199,7 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     g.add_node("propose", propose)
     g.add_node("verify", verify)
     g.add_node("simulate", simulate)
-    g.add_node("metamorphic", metamorphic)
+    g.add_node("run_property_checks", run_property_checks)
     g.add_node("minimize", minimize)
     g.add_node("present", present)
 
@@ -205,8 +208,8 @@ def build_graph(proposer: Proposer, mcp: McpClient):
     g.add_conditional_edges("propose", after_propose, {"verify": "verify", "present": "present"})
     g.add_conditional_edges("verify", after_verify,
                             {"simulate": "simulate", "propose": "propose", "present": "present"})
-    g.add_edge("simulate", "metamorphic")
-    g.add_edge("metamorphic", "minimize")
+    g.add_edge("simulate", "run_property_checks")
+    g.add_edge("run_property_checks", "minimize")
     g.add_edge("minimize", "present")
     g.add_edge("present", END)
     return g.compile()
