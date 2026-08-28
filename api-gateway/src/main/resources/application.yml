@@ -45,13 +45,15 @@ management:
       export:
         enabled: true
   tracing:
+    enabled: false
     sampling:
       probability: ${MENDR_OTEL_SAMPLE_RATE:1.0}
   otlp:
     tracing:
-      endpoint: ${MENDR_OTEL_EXPORTER_OTLP_ENDPOINT:}
+      # Endpoint is applied by MendrOtlpEnvironmentPostProcessor when
+      # MENDR_OTEL_ENABLED=true and MENDR_OTEL_EXPORTER_OTLP_ENDPOINT is a valid http(s) URL.
       export:
-        enabled: ${MENDR_OTEL_ENABLED:false}
+        enabled: false
 
 logging:
   level:
@@ -76,6 +78,7 @@ mendr:
     # (left out of YAML so "unset" means truly absent, not empty):
     #   MENDR_AUTH_WORKOS_JWKS_URI, MENDR_AUTH_WORKOS_ISSUER,
     #   MENDR_AUTH_WORKOS_AUDIENCE, MENDR_AUTH_WORKOS_ORG_CLAIM (default org_id)
+    # OTLP: MENDR_OTEL_ENABLED + MENDR_OTEL_EXPORTER_OTLP_ENDPOINT — see MendrOtlpEnvironmentPostProcessor.
 
 gateway:
   rules:

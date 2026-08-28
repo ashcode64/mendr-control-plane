@@ -116,6 +116,10 @@ services:
       MENDR_AUTH_WORKOS_JWKS_URI: ${MENDR_AUTH_WORKOS_JWKS_URI:-}
       MENDR_AUTH_WORKOS_ISSUER: ${MENDR_AUTH_WORKOS_ISSUER:-}
       MENDR_AUTH_WORKOS_AUDIENCE: ${MENDR_AUTH_WORKOS_AUDIENCE:-}
+      # OTLP tracing (off unless both enabled + valid http(s) endpoint; see MendrOtlpEnvironmentPostProcessor)
+      MENDR_OTEL_ENABLED: ${MENDR_OTEL_ENABLED:-false}
+      MENDR_OTEL_EXPORTER_OTLP_ENDPOINT: ${MENDR_OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      MENDR_OTEL_SAMPLE_RATE: ${MENDR_OTEL_SAMPLE_RATE:-1.0}
     depends_on:
       postgres:
         condition: service_healthy
